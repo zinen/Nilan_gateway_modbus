@@ -42,6 +42,10 @@
 #define PROGRAMSET 500
 #define COMPILED __DATE__ " " __TIME__
 
+#if SERIAL_CHOICE == SERIAL_SOFTWARE
+#define DEBUG_SERIAL // Serial debug can only be used if serial port is not used by modbus
+#endif
+
 #define DEBUG_SCAN_TIME // Turn on/off debugging of scan times
 #ifdef DEBUG_SCAN_TIME
 // Scan time variables
@@ -53,6 +57,7 @@ int scanMin = 5000; // Set to a fake high number
 double scanMovingAvr = 20;
 int scanCount = 0;
 #endif
+#define OUT_TOPIC_VENT "ventilation"
 
 #if SERIAL_CHOICE == SERIAL_SOFTWARE
 SoftwareSerial SSerial(SERIAL_SOFTWARE_RX, SERIAL_SOFTWARE_TX); // RX, TX
@@ -64,7 +69,7 @@ char chipID[12];
 const char *mqttServer = MQTT_SERVER;
 const char *mqttUsername = MQTT_USERNAME;
 const char *mqttPassword = MQTT_PASSWORD;
-WiFiServer server(80);
+WiFiServer webServer(80);
 WiFiClient wifiClient;
 String IPaddress;
 PubSubClient mqttClient(wifiClient);
@@ -174,6 +179,10 @@ void modbusCool(int coolDownTimeMS)
   {
     if (modbusCooldownHit > 50)
     {
+#ifdef DEBUG_SERIAL
+      Serial.println("modbusCool limit reached. Doing reboot now.");
+#endif
+      mqttClient.publish(OUT_TOPIC_VENT "/error/modbusCooldown", "1"); // error when connecting through modbus
       ESP.reset();
     }
     modbusCooldownHit++;
@@ -342,20 +351,28 @@ void mqttReconnect()
   int numberRetries = 0;
   while (!mqttClient.connected() && numberRetries < 3)
   {
-    if (mqttClient.connect(chipID, mqttUsername, mqttPassword, "ventilation/alive", 1, true, "0"))
+    if (mqttClient.connect(chipID, mqttUsername, mqttPassword, OUT_TOPIC_VENT "/alive", 1, true, "0"))
     {
-      mqttClient.publish("ventilation/alive", "1", true);
-      mqttClient.subscribe("ventilation/cmd/+");
+      mqttClient.publish(OUT_TOPIC_VENT "/alive", "1", true);
+      mqttClient.subscribe(OUT_TOPIC_VENT "/cmd/+");
       return;
     }
     else
     {
-      delay(1000);
+#ifdef DEBUG_SERIAL
+      Serial.print("failed, rc=");
+      Serial.print(mqttClient.state());
+      Serial.println(" try again in 5 seconds");
+#endif
+      delay(2000);
     }
     numberRetries++;
   }
   if (numberRetries >= 3)
   {
+#ifdef DEBUG_SERIAL
+    Serial.println("MQTT reconnect tried limit reached. Doing reboot now.");
+#endif
     delay(5000);
     // Give up and do a reboot
     ESP.restart();
@@ -364,62 +381,73 @@ void mqttReconnect()
 
 void mqttCallback(char *topic, byte *payload, unsigned int length)
 {
+#ifdef DEBUG_SERIAL
+  Serial.print("Incoming mqtt topic: ");
+  Serial.print(topic);
+  Serial.println(" value[0]: " + String(payload[0]));
+#endif
   String inputString;
+  bool triggeredVentilation = false;
   for (unsigned int i = 0; i < length; i++)
   {
     inputString += (char)payload[i];
   }
   // Check if topic is equal to string
-  if (strcmp(topic, "ventilation/cmd/ventset") == 0)
+  if (strcmp(topic, OUT_TOPIC_VENT "/cmd/ventset") == 0)
   {
     if (length == 1 && payload[0] >= '0' && payload[0] <= '4')
     {
       int16_t speed = payload[0] - '0';
       WriteModbus(VENTSET, speed);
-      mqttClient.publish("ventilation/cmd/ventset", "", true);
+      mqttClient.publish(OUT_TOPIC_VENT "/cmd/ventset", "", true);
+      triggeredVentilation = true;
     }
   }
-  else if (strcmp(topic, "ventilation/cmd/modeset") == 0)
+  else if (strcmp(topic, OUT_TOPIC_VENT "/cmd/modeset") == 0)
   {
     if (length == 1 && payload[0] >= '0' && payload[0] <= '4')
     {
       int16_t mode = payload[0] - '0';
       WriteModbus(MODESET, mode);
-      mqttClient.publish("ventilation/cmd/modeset", "", true);
+      mqttClient.publish(OUT_TOPIC_VENT "/cmd/modeset", "", true);
+      triggeredVentilation = true;
     }
   }
-  else if (strcmp(topic, "ventilation/cmd/runset") == 0)
+  else if (strcmp(topic, OUT_TOPIC_VENT "/cmd/runset") == 0)
   {
     if (length == 1 && payload[0] >= '0' && payload[0] <= '1')
     {
       int16_t run = payload[0] - '0';
       WriteModbus(RUNSET, run);
-      mqttClient.publish("ventilation/cmd/runset", "", true);
+      mqttClient.publish(OUT_TOPIC_VENT "/cmd/runset", "", true);
+      triggeredVentilation = true;
     }
   }
-  else if (strcmp(topic, "ventilation/cmd/tempset") == 0)
+  else if (strcmp(topic, OUT_TOPIC_VENT "/cmd/tempset") == 0)
   {
     if (length == 4 && payload[0] >= '0' && payload[0] <= '2')
     {
       WriteModbus(TEMPSET, inputString.toInt());
-      mqttClient.publish("ventilation/cmd/tempset", "", true);
+      mqttClient.publish(OUT_TOPIC_VENT "/cmd/tempset", "", true);
+      triggeredVentilation = true;
     }
   }
-  else if (strcmp(topic, "ventilation/cmd/programset") == 0)
+  else if (strcmp(topic, OUT_TOPIC_VENT "/cmd/programset") == 0)
   {
     if (length == 1 && payload[0] >= '0' && payload[0] <= '4')
     {
       int16_t program = payload[0] - '0';
       WriteModbus(PROGRAMSET, program);
-      mqttClient.publish("ventilation/cmd/programset", "", true);
+      mqttClient.publish(OUT_TOPIC_VENT "/cmd/programset", "", true);
+      triggeredVentilation = true;
     }
   }
-  else if (strcmp(topic, "ventilation/cmd/update") == 0)
+  else if (strcmp(topic, OUT_TOPIC_VENT "/cmd/update") == 0)
   {
     // Enter mode in 60 seconds to prioritize OTA
     if (payload[0] == '1')
     {
-      mqttClient.publish("ventilation/cmd/update", "2");
+      mqttClient.publish(OUT_TOPIC_VENT "/cmd/update", "2");
       for (unsigned int i = 0; i < 300; i++)
       {
         ArduinoOTA.handle();
@@ -430,28 +458,38 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
         mqttReconnect();
       }
     }
-    mqttClient.publish("ventilation/cmd/update", "0");
+    mqttClient.publish(OUT_TOPIC_VENT "/cmd/update", "", true); // Clear any retained messages
+    delay(1);
+    mqttClient.publish(OUT_TOPIC_VENT "/cmd/update", "0");
   }
-  else if (strcmp(topic, "ventilation/cmd/reboot") == 0)
+  else if (strcmp(topic, OUT_TOPIC_VENT "/cmd/reboot") == 0)
   {
     if (payload[0] == '1')
     {
-      mqttClient.publish("ventilation/cmd/reboot", "0");
+      mqttClient.publish(OUT_TOPIC_VENT "/cmd/reboot", "0");
       ESP.restart();
     }
   }
-  else if (strcmp(topic, "ventilation/cmd/version") == 0)
+  else if (strcmp(topic, OUT_TOPIC_VENT "/cmd/version") == 0)
   {
     if (inputString != String(COMPILED))
     {
-      mqttClient.publish(topic, String(COMPILED).c_str());
+      mqttClient.publish(OUT_TOPIC_VENT "/cmd/version", String(COMPILED).c_str());
     }
   }
   else
   {
-    mqttClient.publish("ventilation/error/topic", topic);
+#ifdef DEBUG_SERIAL
+    Serial.print("Unknown mqtt topic: ");
+    Serial.print(topic);
+    Serial.println(" value: " + inputString);
+#endif
+    mqttClient.publish(OUT_TOPIC_VENT "/error/topic", topic);
   }
-  lastMsg = -MQTT_SEND_INTERVAL;
+  if (triggeredVentilation == true)
+  {
+    lastMsg = -MQTT_SEND_INTERVAL;
+  }
 }
 
 bool readRequest(WiFiClient &client)
@@ -503,50 +541,16 @@ void writeResponse(WiFiClient &client, const JsonDocument &doc)
   client.print(response);
 }
 
-void setup()
+void mqttHandle()
 {
-  char host[64];
-  sprintf(chipID, "%08X", ESP.getChipId());
-  sprintf(host, HOST, chipID);
-#if USE_WIFI_LED
-  pinMode(WIFI_LED, OUTPUT);
-  digitalWrite(WIFI_LED, LOW); // Reverse meaning. LOW=LED ON
-#endif
-  delay(500);
-  WiFi.mode(WIFI_STA);
-  WiFi.hostname(host);
-  WiFi.begin(ssid, password);
-  while (WiFi.waitForConnectResult() != WL_CONNECTED)
+  if (!mqttClient.connected())
   {
-    delay(5000);
-    // Give up and do a reboot
-    ESP.restart();
+    mqttReconnect();
   }
-#if USE_WIFI_LED
-  digitalWrite(WIFI_LED, HIGH);
-#endif
-  ArduinoOTA.setHostname(host);
-  ArduinoOTA.begin();
-  server.begin();
-
-#if SERIAL_CHOICE == SERIAL_SOFTWARE
-#warning Compiling for software serial
-  SSerial.begin(19200, SWSERIAL_8E1);
-  node.begin(MODBUS_SLAVE_ADDRESS, SSerial);
-#elif SERIAL_CHOICE == SERIAL_HARDWARE
-#warning Compiling for hardware serial
-  Serial.begin(19200, SERIAL_8E1);
-  node.begin(MODBUS_SLAVE_ADDRESS, Serial);
-#else
-#error hardware og serial serial port?
-#endif
-
-  mqttClient.setServer(mqttServer, 1883);
-  mqttClient.setCallback(mqttCallback);
-  mqttReconnect();
-  mqttClient.publish("ventilation/gateway/boot", String(millis()).c_str());
-  IPaddress = WiFi.localIP().toString();
-  mqttClient.publish("ventilation/gateway/ip", IPaddress.c_str());
+  mqttClient.loop();
+  // Error due to analog reading of A0 to close to mqtt connect may cause error ref. https://github.com/knolleary/pubsubclient/issues/604#issuecomment-605597161
+  // Adding a delay seems to fix this
+  delay(2);
 }
 
 #ifdef DEBUG_SCAN_TIME
@@ -573,217 +577,265 @@ void scanTimer()
   scanMovingAvr = scanTime * (0.3 / (1 + scanCount)) + scanMovingAvr * (1 - (0.3 / (1 + scanCount)));
   if (scanCount > SCAN_COUNT_MAX)
   {
-    mqttClient.publish("ventilation/debug/scanMin", String(scanMin).c_str());
-    mqttClient.publish("ventilation/debug/scanMax", String(scanMax).c_str());
-    mqttClient.publish("ventilation/debug/scanMovingAvr", String(floor(scanMovingAvr * 100) / 100).c_str());
+    mqttClient.publish(OUT_TOPIC_VENT "/debug/scanMin", String(scanMin).c_str());
+    mqttClient.publish(OUT_TOPIC_VENT "/debug/scanMax", String(scanMax).c_str());
+    mqttClient.publish(OUT_TOPIC_VENT "/debug/scanMovingAvr", String(floor(scanMovingAvr * 100) / 100).c_str());
   }
   scanLast = millis();
 }
 #endif
 
+void setup()
+{
+  char host[64];
+  sprintf(chipID, "%08X", ESP.getChipId());
+  sprintf(host, HOST, chipID);
+#ifdef DEBUG_SERIAL
+  Serial.begin(115200);
+  Serial.println("Started");
+  Serial.println("chipID: " + String(host));
+#endif
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW); // Reverse meaning. LOW=LED ON
+  WiFi.mode(WIFI_STA);
+  WiFi.hostname(host);
+  WiFi.begin(ssid, password);
+  while (WiFi.waitForConnectResult() != WL_CONNECTED)
+  {
+#ifdef DEBUG_SERIAL
+    Serial.println("Wifi connection not up within timeout. Doing reboot now.");
+    Serial.print("RSSI: ");
+    Serial.println(WiFi.RSSI());
+#endif
+    delay(5000);
+    // Give up and do a reboot
+    ESP.restart();
+  }
+  ArduinoOTA.setHostname(host);
+  ArduinoOTA.begin();
+  webServer.begin();
+
+#if SERIAL_CHOICE == SERIAL_SOFTWARE
+#warning Compiling for software serial
+  SSerial.begin(19200, SWSERIAL_8E1);
+  node.begin(MODBUS_SLAVE_ADDRESS, SSerial);
+#elif SERIAL_CHOICE == SERIAL_HARDWARE
+#warning Compiling for hardware serial
+  Serial.begin(19200, SERIAL_8E1);
+  node.begin(MODBUS_SLAVE_ADDRESS, Serial);
+#else
+#error hardware og serial serial port?
+#endif
+
+  mqttClient.setServer(mqttServer, 1883);
+  mqttClient.setCallback(mqttCallback);
+  mqttHandle();
+  mqttClient.publish(OUT_TOPIC_VENT "/gateway/boot", String(millis()).c_str());
+  IPaddress = WiFi.localIP().toString();
+  mqttClient.publish(OUT_TOPIC_VENT "/gateway/ip", IPaddress.c_str());
+  digitalWrite(LED_BUILTIN, HIGH);
+#ifdef DEBUG_SCAN_TIME
+  scanTimer();
+#endif
+}
+
 void loop()
 {
   ArduinoOTA.handle();
-  WiFiClient client = server.available();
-  if (client)
+  WiFiClient webClient = webServer.available();
+  if (webClient)
   {
-    bool success = readRequest(client);
+    bool success = readRequest(webClient);
     if (success)
     {
       StaticJsonDocument<1000> doc;
       HandleRequest(doc);
-      writeResponse(client, doc);
+      writeResponse(webClient, doc);
     }
-    client.stop();
+    webClient.stop();
   }
-
-  if (!mqttClient.connected())
+  mqttHandle();
+  
+  long now = millis();
+  if (now - lastMsg > MQTT_SEND_INTERVAL)
   {
-    mqttReconnect();
-  }
-
-  if (mqttClient.connected())
-  {
-    mqttClient.loop();
-    long now = millis();
-    if (now - lastMsg > MQTT_SEND_INTERVAL)
+    //  ReqTypes rr[] = {reqtemp, reqcontrol, reqtime, reqoutput, reqspeed, reqalarm, reqinputairtemp, reqprogram, requser, reqdisplay, reqinfo}; // put another register in this line to subscribe
+    ReqTypes rr[] = {reqtemp1, reqtemp2, reqtemp3, reqcontrol, reqalarm, reqinputairtemp, reqprogram, reqdisplay, requser}; // put another register in this line to subscribe
+    for (unsigned int i = 0; i < (sizeof(rr) / sizeof(rr[0])); i++)
     {
-      //  ReqTypes rr[] = {reqtemp, reqcontrol, reqtime, reqoutput, reqspeed, reqalarm, reqinputairtemp, reqprogram, requser, reqdisplay, reqinfo}; // put another register in this line to subscribe
-      ReqTypes rr[] = {reqtemp1, reqtemp2, reqtemp3, reqcontrol, reqalarm, reqinputairtemp, reqprogram, reqdisplay, requser}; // put another register in this line to subscribe
-      for (unsigned int i = 0; i < (sizeof(rr) / sizeof(rr[0])); i++)
+      ReqTypes r = rr[i];
+      char result = ReadModbus(regAddresses[r], regSizes[r], rsBuffer, regTypes[r]);
+      if (result == 0)
       {
-        ReqTypes r = rr[i];
-        char result = ReadModbus(regAddresses[r], regSizes[r], rsBuffer, regTypes[r]);
-        if (result == 0)
+        mqttClient.publish(OUT_TOPIC_VENT "/error/modbus", "0"); // no error when connecting through modbus
+        for (int i = 0; i < regSizes[r]; i++)
         {
-          mqttClient.publish("ventilation/error/modbus", "0"); // no error when connecting through modbus
-          for (int i = 0; i < regSizes[r]; i++)
+          char const *name = getName(r, i);
+          char numberString[10];
+          if (name != NULL && strlen(name) > 0)
           {
-            char const *name = getName(r, i);
-            char numberString[10];
-            if (name != NULL && strlen(name) > 0)
+            String mqttTopic;
+            switch (r)
             {
-              String mqttTopic;
-              switch (r)
-              {
-              case reqcontrol:
-                mqttTopic = "ventilation/control/"; // Subscribe to the "control" register
-                itoa((rsBuffer[i]), numberString, 10);
-                break;
-              case reqtime:
-                mqttTopic = "ventilation/time/"; // Subscribe to the "output" register
-                itoa((rsBuffer[i]), numberString, 10);
-                break;
-              case reqoutput:
-                mqttTopic = "ventilation/output/"; // Subscribe to the "output" register
-                itoa((rsBuffer[i]), numberString, 10);
-                break;
-              case reqdisplay:
-                mqttTopic = "ventilation/display/"; // Subscribe to the "input display" register
-                itoa((rsBuffer[i]), numberString, 10);
-                break;
-              case reqspeed:
-                mqttTopic = "ventilation/speed/"; // Subscribe to the "speed" register
-                itoa((rsBuffer[i]), numberString, 10);
-                break;
-              case reqalarm:
-                mqttTopic = "ventilation/alarm/"; // Subscribe to the "alarm" register
+            case reqcontrol:
+              mqttTopic = OUT_TOPIC_VENT "/control/"; // Subscribe to the "control" register
+              itoa((rsBuffer[i]), numberString, 10);
+              break;
+            case reqtime:
+              mqttTopic = OUT_TOPIC_VENT "/time/"; // Subscribe to the "output" register
+              itoa((rsBuffer[i]), numberString, 10);
+              break;
+            case reqoutput:
+              mqttTopic = OUT_TOPIC_VENT "/output/"; // Subscribe to the "output" register
+              itoa((rsBuffer[i]), numberString, 10);
+              break;
+            case reqdisplay:
+              mqttTopic = OUT_TOPIC_VENT "/display/"; // Subscribe to the "input display" register
+              itoa((rsBuffer[i]), numberString, 10);
+              break;
+            case reqspeed:
+              mqttTopic = OUT_TOPIC_VENT "/speed/"; // Subscribe to the "speed" register
+              itoa((rsBuffer[i]), numberString, 10);
+              break;
+            case reqalarm:
+              mqttTopic = OUT_TOPIC_VENT "/alarm/"; // Subscribe to the "alarm" register
 
-                switch (i)
+              switch (i)
+              {
+              case 1: // Alarm.List_1_ID
+              case 4: // Alarm.List_2_ID
+              case 7: // Alarm.List_3_ID
+                if (rsBuffer[i] > 0)
                 {
-                case 1: // Alarm.List_1_ID
-                case 4: // Alarm.List_2_ID
-                case 7: // Alarm.List_3_ID
-                  if (rsBuffer[i] > 0)
+                  // itoa((rsBuffer[i]), numberString, 10);
+                  sprintf(numberString, "UNKNOWN"); // Preallocate unknown if no match if found
+                  for (unsigned int p = 0; p < (sizeof(AlarmListNumber)); p++)
                   {
-                    // itoa((rsBuffer[i]), numberString, 10);
-                    sprintf(numberString, "UNKNOWN"); // Preallocate unknown if no match if found
-                    for (unsigned int p = 0; p < (sizeof(AlarmListNumber)); p++)
+                    if (AlarmListNumber[p] == rsBuffer[i])
                     {
-                      if (AlarmListNumber[p] == rsBuffer[i])
-                      {
-                        //   memset(numberString, 0, sizeof numberString);
-                        //   strcpy (numberString,AlarmListText[p].c_str());
-                        sprintf(numberString, AlarmListText[p].c_str());
-                        break;
-                      }
+                      //   memset(numberString, 0, sizeof numberString);
+                      //   strcpy (numberString,AlarmListText[p].c_str());
+                      sprintf(numberString, AlarmListText[p].c_str());
+                      break;
                     }
                   }
-                  else
-                  {
-                    sprintf(numberString, "None"); // No alarm, output None
-                  }
-                  break;
-                case 2: // Alarm.List_1_Date
-                case 5: // Alarm.List_2_Date
-                case 8: // Alarm.List_3_Date
-                  if (rsBuffer[i] > 0)
-                  {
-                    sprintf(numberString, "%d", (rsBuffer[i] >> 9) + 1980);
-                    sprintf(numberString + strlen(numberString), "-%02d", (rsBuffer[i] & 0x1E0) >> 5);
-                    sprintf(numberString + strlen(numberString), "-%02d", (rsBuffer[i] & 0x1F));
-                  }
-                  else
-                  {
-                    sprintf(numberString, "N/A"); // No alarm, output N/A
-                  }
-                  break;
-                case 3: // Alarm.List_1_Time
-                case 6: // Alarm.List_2_Time
-                case 9: // Alarm.List_3_Time
-                  if (rsBuffer[i] > 0)
-                  {
-                    sprintf(numberString, "%02d", rsBuffer[i] >> 11);
-                    sprintf(numberString + strlen(numberString), ":%02d", (rsBuffer[i] & 0x7E0) >> 5);
-                    sprintf(numberString + strlen(numberString), ":%02d", (rsBuffer[i] & 0x11F) * 2);
-                  }
-                  else
-                  {
-                    sprintf(numberString, "N/A"); // No alarm, output N/A
-                  }
+                }
+                else
+                {
+                  sprintf(numberString, "None"); // No alarm, output None
+                }
+                break;
+              case 2: // Alarm.List_1_Date
+              case 5: // Alarm.List_2_Date
+              case 8: // Alarm.List_3_Date
+                if (rsBuffer[i] > 0)
+                {
+                  sprintf(numberString, "%d", (rsBuffer[i] >> 9) + 1980);
+                  sprintf(numberString + strlen(numberString), "-%02d", (rsBuffer[i] & 0x1E0) >> 5);
+                  sprintf(numberString + strlen(numberString), "-%02d", (rsBuffer[i] & 0x1F));
+                }
+                else
+                {
+                  sprintf(numberString, "N/A"); // No alarm, output N/A
+                }
+                break;
+              case 3: // Alarm.List_1_Time
+              case 6: // Alarm.List_2_Time
+              case 9: // Alarm.List_3_Time
+                if (rsBuffer[i] > 0)
+                {
+                  sprintf(numberString, "%02d", rsBuffer[i] >> 11);
+                  sprintf(numberString + strlen(numberString), ":%02d", (rsBuffer[i] & 0x7E0) >> 5);
+                  sprintf(numberString + strlen(numberString), ":%02d", (rsBuffer[i] & 0x11F) * 2);
+                }
+                else
+                {
+                  sprintf(numberString, "N/A"); // No alarm, output N/A
+                }
 
-                  break;
-                default: // used for Status bit (case 0)
-                  itoa((rsBuffer[i]), numberString, 10);
-                }
                 break;
-              case reqinputairtemp:
-                mqttTopic = "ventilation/inputairtemp/"; // Subscribe to the "inputairtemp" register
+              default: // used for Status bit (case 0)
                 itoa((rsBuffer[i]), numberString, 10);
-                break;
-              case reqprogram:
-                mqttTopic = "ventilation/weekprogram/"; // Subscribe to the "week program" register
-                itoa((rsBuffer[i]), numberString, 10);
-                break;
-              case requser:
-                mqttTopic = "ventilation/user/"; // Subscribe to the "user" register
-                itoa((rsBuffer[i]), numberString, 10);
-                break;
-              case requser2:
-                mqttTopic = "ventilation/user/"; // Subscribe to the "user2" register
-                itoa((rsBuffer[i]), numberString, 10);
-                break;
-              case reqinfo:
-                mqttTopic = "ventilation/info/"; // Subscribe to the "info" register
-                itoa((rsBuffer[i]), numberString, 10);
-                break;
-              case reqtemp1:
-                if (strncmp("RH", name, 2) == 0)
-                {
-                  mqttTopic = "ventilation/moist/"; // Subscribe to moisture-level
-                }
-                else
-                {
-                  mqttTopic = "ventilation/temp/"; // Subscribe to "temp" register
-                }
-                dtostrf((rsBuffer[i] / 100.0), 5, 2, numberString);
-                break;
-              case reqtemp2:
-                if (strncmp("RH", name, 2) == 0)
-                {
-                  mqttTopic = "ventilation/moist/"; // Subscribe to moisture-level
-                }
-                else
-                {
-                  mqttTopic = "ventilation/temp/"; // Subscribe to "temp" register
-                }
-                dtostrf((rsBuffer[i] / 100.0), 5, 2, numberString);
-                break;
-              case reqtemp3:
-                if (strncmp("RH", name, 2) == 0)
-                {
-                  mqttTopic = "ventilation/moist/"; // Subscribe to moisture-level
-                }
-                else
-                {
-                  mqttTopic = "ventilation/temp/"; // Subscribe to "temp" register
-                }
-                dtostrf((rsBuffer[i] / 100.0), 5, 2, numberString);
-                break;
-              default:
-                // If not all enumerations possibilities are handled then message are added to the unmapped topic
-                mqttTopic = "ventilation/unmapped/";
-                break;
               }
-              mqttTopic += (char *)name;
-              mqttClient.publish(mqttTopic.c_str(), numberString);
+              break;
+            case reqinputairtemp:
+              mqttTopic = OUT_TOPIC_VENT "/inputairtemp/"; // Subscribe to the "inputairtemp" register
+              itoa((rsBuffer[i]), numberString, 10);
+              break;
+            case reqprogram:
+              mqttTopic = OUT_TOPIC_VENT "/weekprogram/"; // Subscribe to the "week program" register
+              itoa((rsBuffer[i]), numberString, 10);
+              break;
+            case requser:
+              mqttTopic = OUT_TOPIC_VENT "/user/"; // Subscribe to the "user" register
+              itoa((rsBuffer[i]), numberString, 10);
+              break;
+            case requser2:
+              mqttTopic = OUT_TOPIC_VENT "/user/"; // Subscribe to the "user2" register
+              itoa((rsBuffer[i]), numberString, 10);
+              break;
+            case reqinfo:
+              mqttTopic = OUT_TOPIC_VENT "/info/"; // Subscribe to the "info" register
+              itoa((rsBuffer[i]), numberString, 10);
+              break;
+            case reqtemp1:
+              if (strncmp("RH", name, 2) == 0)
+              {
+                mqttTopic = OUT_TOPIC_VENT "/moist/"; // Subscribe to moisture-level
+              }
+              else
+              {
+                mqttTopic = OUT_TOPIC_VENT "/temp/"; // Subscribe to "temp" register
+              }
+              dtostrf((rsBuffer[i] / 100.0), 5, 2, numberString);
+              break;
+            case reqtemp2:
+              if (strncmp("RH", name, 2) == 0)
+              {
+                mqttTopic = OUT_TOPIC_VENT "/moist/"; // Subscribe to moisture-level
+              }
+              else
+              {
+                mqttTopic = OUT_TOPIC_VENT "/temp/"; // Subscribe to "temp" register
+              }
+              dtostrf((rsBuffer[i] / 100.0), 5, 2, numberString);
+              break;
+            case reqtemp3:
+              if (strncmp("RH", name, 2) == 0)
+              {
+                mqttTopic = OUT_TOPIC_VENT "/moist/"; // Subscribe to moisture-level
+              }
+              else
+              {
+                mqttTopic = OUT_TOPIC_VENT "/temp/"; // Subscribe to "temp" register
+              }
+              dtostrf((rsBuffer[i] / 100.0), 5, 2, numberString);
+              break;
+            default:
+              // If not all enumerations possibilities are handled then message are added to the unmapped topic
+              mqttTopic = OUT_TOPIC_VENT "/unmapped/";
+              break;
             }
+            mqttTopic += (char *)name;
+            mqttClient.publish(mqttTopic.c_str(), numberString);
           }
         }
-        else
-        {
-          mqttClient.publish("ventilation/error/modbus", "1"); // error when connecting through modbus
-        }
       }
-      lastMsg = now;
-      if (now > (long)1288490187)
+      else
       {
-        // Fix to make sure the command millis() dont overflow. This happens after 50 days and would mess up some logic above
-        // Reboot if ESP has been running for approximately 30 days.
-        ESP.restart();
+        mqttClient.publish(OUT_TOPIC_VENT "/error/modbus", "1"); // error when connecting through modbus
       }
     }
+
+    lastMsg = now;
+    if (now > (long)1288490187)
+    {
+      // Fix to make sure the command millis() dont overflow. This happens after 50 days and would mess up some logic above
+      // Reboot if ESP has been running for approximately 30 days.
+      ESP.restart();
+    }
   }
+
 #ifdef DEBUG_SCAN_TIME
   scanTimer();
 #endif
