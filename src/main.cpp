@@ -31,7 +31,7 @@
 #define SERIAL_HARDWARE 2
 #if SERIAL_CHOICE == SERIAL_SOFTWARE
 // for some reason this library keeps beeing included when building
-// #include <SoftwareSerial.h>
+#include <SoftwareSerial.h>
 #endif
 #define HOST "NilanGW-%s" // Change this to whatever you like.
 #define MAX_REG_SIZE 26
