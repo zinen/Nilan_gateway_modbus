@@ -63,6 +63,26 @@ int scanCount = 0;
 SoftwareSerial SSerial(SERIAL_SOFTWARE_RX, SERIAL_SOFTWARE_TX); // RX, TX
 #endif
 
+// Water meter variables
+#define OUT_TOPIC_WATER "water"
+#define WATER_IR_PIN A0
+int waterIrLevel, waterIrLevelReal, waterLastLevel, waterIrDiff, waterIrMaxReal, waterIrMinReal = 1024;
+int waterIrMin = 100; // 75; // set realistic low  but about 20% higher then min. IR value found via debugging
+int waterIrMiddle;
+int waterIrMax = 400; // 435; // set realistic high but about 20% lower then max. IR value found via debugging
+unsigned long waterEntryNext, waterLastAliveMessage;
+int waterState, waterStateLast;
+int waitForStart = 10; // Wait for mqtt commands before start
+int waterConsumptionCount;
+bool waterWaitingForConsumptionCount = true;
+
+// TODO delete next:
+double movingAvrIrMin = 20;
+double movingAvrIrMax = 20;
+double movingAvrIrMid1 = 20;
+double movingAvrIrMid2 = 20;
+int movingAvrIrMinCount, movingAvrIrMaxCount, movingAvrIrMidCount1, movingAvrIrMidCount2;
+
 const char *ssid = WIFI_SSID;
 const char *password = WIFI_PASSWORD;
 char chipID[12];
@@ -73,17 +93,17 @@ WiFiServer webServer(80);
 WiFiClient wifiClient;
 String IPaddress;
 PubSubClient mqttClient(wifiClient);
-long lastMsg = -MQTT_SEND_INTERVAL;
+unsigned long ventEntryNext;
 long modbusCooldown = 0;   // Used to limit modbus read/write operations
 int modbusCooldownHit = 0; // Used to limit modbus read/write operations
 int16_t rsBuffer[MAX_REG_SIZE];
 ModbusMaster node;
 
-int16_t AlarmListNumber[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 70, 71, 90, 91, 92};
-String AlarmListText[] = {"NONE", "HARDWARE", "TIMEOUT", "FIRE", "PRESSURE", "DOOR", "DEFROST", "FROST", "FROST", "OVERTEMP", "OVERHEAT", "AIRFLOW", "THERMO", "BOILING", "SENSOR", "ROOM LOW", "SOFTWARE", "WATCHDOG", "CONFIG", "FILTER", "LEGIONEL", "POWER", "T AIR", "T WATER", "T HEAT", "MODEM", "INSTABUS", "T1SHORT", "T1OPEN", "T2SHORT", "T2OPEN", "T3SHORT", "T3OPEN", "T4SHORT", "T4OPEN", "T5SHORT", "T5OPEN", "T6SHORT", "T6OPEN", "T7SHORT", "T7OPEN", "T8SHORT", "T8OPEN", "T9SHORT", "T9OPEN", "T10SHORT", "T10OPEN", "T11SHORT", "T11OPEN", "T12SHORT", "T12OPEN", "T13SHORT", "T13OPEN", "T14SHORT", "T14OPEN", "T15SHORT", "T15OPEN", "T16SHORT", "T16OPEN", "ANODE", "EXCH INFO", "SLAVE IO", "OPT IO", "PRESET", "INSTABUS"};
+int16_t ventAlarmListNumber[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 70, 71, 90, 91, 92};
+String ventAlarmListText[] = {"NONE", "HARDWARE", "TIMEOUT", "FIRE", "PRESSURE", "DOOR", "DEFROST", "FROST", "FROST", "OVERTEMP", "OVERHEAT", "AIRFLOW", "THERMO", "BOILING", "SENSOR", "ROOM LOW", "SOFTWARE", "WATCHDOG", "CONFIG", "FILTER", "LEGIONEL", "POWER", "T AIR", "T WATER", "T HEAT", "MODEM", "INSTABUS", "T1SHORT", "T1OPEN", "T2SHORT", "T2OPEN", "T3SHORT", "T3OPEN", "T4SHORT", "T4OPEN", "T5SHORT", "T5OPEN", "T6SHORT", "T6OPEN", "T7SHORT", "T7OPEN", "T8SHORT", "T8OPEN", "T9SHORT", "T9OPEN", "T10SHORT", "T10OPEN", "T11SHORT", "T11OPEN", "T12SHORT", "T12OPEN", "T13SHORT", "T13OPEN", "T14SHORT", "T14OPEN", "T15SHORT", "T15OPEN", "T16SHORT", "T16OPEN", "ANODE", "EXCH INFO", "SLAVE IO", "OPT IO", "PRESET", "INSTABUS"};
 
-String req[4]; // operation, group, address, value
-enum ReqTypes
+String webRequestQueries[4]; // operation, group, address, value
+enum ventRequestTypes
 {
   reqtemp1 = 0,
   reqtemp2,
@@ -105,24 +125,24 @@ enum ReqTypes
   reqdisplay1,
   reqdisplay2,
   reqdisplay,
-  reqmax
+  reqmax // <-- Used to end for loops
 };
 
-String groups[] = {"temp1", "temp2", "temp3", "alarm", "time", "control", "speed", "airtemp", "airflow", "airheat", "program", "user", "user2", "info", "inputairtemp", "app", "output", "display1", "display2", "display"};
+String ventGroups[] = {"temp1", "temp2", "temp3", "alarm", "time", "control", "speed", "airtemp", "airflow", "airheat", "program", "user", "user2", "info", "inputairtemp", "app", "output", "display1", "display2", "display"};
 
 // Start address to read from
-int regAddresses[] = {203, 207, 221, 400, 300, 1000, 200, 1200, 1100, 0, 500, 600, 610, 100, 1200, 0, 100, 2002, 2007, 3000};
+int ventRegistrationAddresses[] = {203, 207, 221, 400, 300, 1000, 200, 1200, 1100, 0, 500, 600, 610, 100, 1200, 0, 100, 2002, 2007, 3000};
 
 // How many values to read from based on start address
-// byte regSizes[] = {23, 10, 6, 8, 2, 6, 2, 0, 1, 6, 6, 14, 7, 4, 26, 4, 4, 1};
-byte regSizes[] = {2, 2, 1, 10, 6, 8, 2, 6, 2, 0, 1, 6, 6, 14, 1, 4, 26, 4, 4, 1};
+// byte ventRegistrationSizes[] = {23, 10, 6, 8, 2, 6, 2, 0, 1, 6, 6, 14, 7, 4, 26, 4, 4, 1};
+byte ventRegistrationSizes[] = {2, 2, 1, 10, 6, 8, 2, 6, 2, 0, 1, 6, 6, 14, 1, 4, 26, 4, 4, 1};
 
 // 0=raw, 1=x, 2 = return 2 characters ASCII,
 // 4=xx, 8= return float dived by 1000,
-byte regTypes[] = {8, 8, 8, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 2, 1, 4, 4, 8};
+byte ventRegistrationTypes[] = {8, 8, 8, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 2, 1, 4, 4, 8};
 
 // Text translation of incoming data of the given address
-char const *regNames[][MAX_REG_SIZE] = {
+char const *ventRegistrationNames[][MAX_REG_SIZE] = {
     // temp
     // {"T0_Controller", "T1_Intake", NULL, "T3_Exhaust", "T4_Outlet", NULL, NULL, "T7_Inlet", "T8_Outdoor", NULL, NULL, NULL, NULL, NULL, NULL, "T15_Room", NULL, NULL, NULL, NULL, NULL, "RH", NULL},
     {"T3_Exhaust", "T4_Outlet"},
@@ -163,11 +183,11 @@ char const *regNames[][MAX_REG_SIZE] = {
     // air bypass
     {"AirBypass/IsOpen"}};
 
-char const *getName(ReqTypes type, int address)
+char const *getName(ventRequestTypes type, int address)
 {
-  if (address >= 0 && address <= regSizes[type])
+  if (address >= 0 && address <= ventRegistrationSizes[type])
   {
-    return regNames[type][address];
+    return ventRegistrationNames[type][address];
   }
   return NULL;
 }
@@ -235,25 +255,25 @@ char ReadModbus(uint16_t addr, uint8_t sizer, int16_t *vals, int type)
 JsonObject HandleRequest(JsonDocument &doc)
 {
   JsonObject root = doc.to<JsonObject>();
-  ReqTypes r = reqmax;
-  if (req[1] != "")
+  ventRequestTypes r = reqmax;
+  if (webRequestQueries[1] != "")
   {
     for (int i = 0; i < reqmax; i++)
     {
-      if (groups[i] == req[1])
+      if (ventGroups[i] == webRequestQueries[1])
       {
-        r = (ReqTypes)i;
+        r = (ventRequestTypes)i;
       }
     }
   }
-  char type = regTypes[r];
-  if (req[0] == "read")
+  char type = ventRegistrationTypes[r];
+  if (webRequestQueries[0] == "read")
   {
     int address = 0;
     int nums = 0;
     char result = -1;
-    address = regAddresses[r];
-    nums = regSizes[r];
+    address = ventRegistrationAddresses[r];
+    nums = ventRegistrationSizes[r];
 
     result = ReadModbus(address, nums, rsBuffer, type);
     if (result == 0)
@@ -291,20 +311,20 @@ JsonObject HandleRequest(JsonDocument &doc)
     root["requestAddress"] = address;
     root["requestNumber"] = nums;
   }
-  else if (req[0] == "set" && req[2] != "" && req[3] != "")
+  else if (webRequestQueries[0] == "set" && webRequestQueries[2] != "" && webRequestQueries[3] != "")
   {
-    int address = atoi(req[2].c_str());
-    int value = atoi(req[3].c_str());
+    int address = atoi(webRequestQueries[2].c_str());
+    int value = atoi(webRequestQueries[3].c_str());
     char result = WriteModbus(address, value);
     root["result"] = result;
     root["address"] = address;
     root["value"] = value;
   }
-  else if (req[0] == "get" && req[1] >= "0" && req[2] > "0")
+  else if (webRequestQueries[0] == "get" && webRequestQueries[1] >= "0" && webRequestQueries[2] > "0")
   {
-    int address = atoi(req[1].c_str());
-    int nums = atoi(req[2].c_str());
-    int type = atoi(req[3].c_str());
+    int address = atoi(webRequestQueries[1].c_str());
+    int nums = atoi(webRequestQueries[2].c_str());
+    int type = atoi(webRequestQueries[3].c_str());
     char result = ReadModbus(address, nums, rsBuffer, type);
     if (result == 0)
     // if (true)
@@ -334,16 +354,24 @@ JsonObject HandleRequest(JsonDocument &doc)
       root["type"] = "Should be 0 or 1 for input/holding register";
     }
   }
-  else if (req[0] == "help" || req[0] == "")
+  else if (webRequestQueries[0] == "help" || webRequestQueries[0] == "")
   {
     for (int i = 0; i < reqmax; i++)
     {
-      root[groups[i]] = "http://../read/" + groups[i];
+      root[ventGroups[i]] = "http://../read/" + ventGroups[i];
     }
   }
-  root["operation"] = req[0];
-  root["group"] = req[1];
+  root["operation"] = webRequestQueries[0];
+  root["group"] = webRequestQueries[1];
   return root;
+}
+
+void incrementTicks(int consumption = 1)
+{
+  waterConsumptionCount += consumption;
+  char intToChar[12];
+  sprintf(intToChar, "%d", waterConsumptionCount);
+  mqttClient.publish(OUT_TOPIC_WATER "/total", String(waterConsumptionCount).c_str(), true); // Retain value
 }
 
 void mqttReconnect()
@@ -355,6 +383,7 @@ void mqttReconnect()
     {
       mqttClient.publish(OUT_TOPIC_VENT "/alive", "1", true);
       mqttClient.subscribe(OUT_TOPIC_VENT "/cmd/+");
+      mqttClient.subscribe(OUT_TOPIC_WATER "/cmd/+");
       return;
     }
     else
@@ -477,27 +506,65 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
       mqttClient.publish(OUT_TOPIC_VENT "/cmd/version", String(COMPILED).c_str());
     }
   }
+  else if (strcmp(topic, OUT_TOPIC_VENT "/cmd/readout") == 0)
+  {
+    if (payload[0] == '1')
+    {
+      triggeredVentilation = true;
+      mqttClient.publish(OUT_TOPIC_VENT "/cmd/readout", "");
+    }
+  }
+  // Start of water topics
+  else if (strcmp(topic, OUT_TOPIC_WATER "/cmd/total") == 0)
+  {
+    waterConsumptionCount = inputString.toInt();
+    incrementTicks(0);
+  }
+  else if (strcmp(topic, OUT_TOPIC_WATER "/cmd/readout") == 0)
+  {
+    mqttClient.publish(OUT_TOPIC_WATER "/debug/irLevel", String(waterIrLevel).c_str());
+    mqttClient.publish(OUT_TOPIC_WATER "/debug/irLevelReal", String(waterIrLevelReal).c_str());
+    mqttClient.publish(OUT_TOPIC_WATER "/debug/irMin", String(waterIrMin).c_str());
+    mqttClient.publish(OUT_TOPIC_WATER "/debug/irMax", String(waterIrMax).c_str());
+    mqttClient.publish(OUT_TOPIC_WATER "/debug/irMaxReal", String(waterIrMaxReal).c_str());
+    mqttClient.publish(OUT_TOPIC_WATER "/debug/irMinReal", String(waterIrMinReal).c_str());
+    mqttClient.publish(OUT_TOPIC_WATER "/debug/state", String(waterState).c_str());
+    mqttClient.publish(OUT_TOPIC_WATER "/debug/movingAvrIrMin", String(floor(movingAvrIrMin * 100) / 100).c_str());
+    mqttClient.publish(OUT_TOPIC_WATER "/debug/movingAvrIrMax", String(floor(movingAvrIrMax * 100) / 100).c_str());
+    mqttClient.publish(OUT_TOPIC_WATER "/debug/movingAvrIrMid1", String(floor(movingAvrIrMid1 * 100) / 100).c_str());
+    mqttClient.publish(OUT_TOPIC_WATER "/debug/movingAvrIrMid2", String(floor(movingAvrIrMid2 * 100) / 100).c_str());
+    mqttClient.publish(OUT_TOPIC_WATER "/debug/movingAvrIrMinCount", String(movingAvrIrMinCount).c_str());
+  }
+  else if (waterWaitingForConsumptionCount && strcmp(topic, OUT_TOPIC_WATER "/total") == 0)
+  {
+    waterWaitingForConsumptionCount = false;
+    mqttClient.unsubscribe(OUT_TOPIC_WATER "/total");
+    waterConsumptionCount = inputString.toInt(); // Convert char to int. On error returns zero
+    waitForStart = 0;
+    mqttClient.publish(OUT_TOPIC_WATER "/debug/totalRecovery", inputString.c_str());
+  }
   else
   {
+    String inputTopic = topic;
 #ifdef DEBUG_SERIAL
     Serial.print("Unknown mqtt topic: ");
-    Serial.print(topic);
+    Serial.print(inputTopic);
     Serial.println(" value: " + inputString);
 #endif
-    mqttClient.publish(OUT_TOPIC_VENT "/error/topic", topic);
+    mqttClient.publish(OUT_TOPIC_VENT "/error/topic", inputTopic.c_str());
   }
   if (triggeredVentilation == true)
   {
-    lastMsg = -MQTT_SEND_INTERVAL;
+    ventEntryNext = 0; //-MQTT_SEND_INTERVAL;
   }
 }
 
 bool readRequest(WiFiClient &client)
 {
-  req[0] = "";
-  req[1] = "";
-  req[2] = "";
-  req[3] = "";
+  webRequestQueries[0] = "";
+  webRequestQueries[1] = "";
+  webRequestQueries[2] = "";
+  webRequestQueries[3] = "";
 
   int n = -1;
   while (client.connected())
@@ -515,7 +582,7 @@ bool readRequest(WiFiClient &client)
       }
       else if (c != ' ' && n >= 0 && n < 4)
       {
-        req[n] += c;
+        webRequestQueries[n] += c;
       }
       else if (c == ' ' && n >= 0 && n < 4)
       {
@@ -571,7 +638,7 @@ void scanTimer()
   scanTime = millis() - scanLast;
   if (scanTime > scanMax)
     scanMax = scanTime;
-  if (scanTime < scanMin)
+  if (scanTime < scanMin && scanTime > 0)
     scanMin = scanTime;
   scanCount++;
   scanMovingAvr = scanTime * (0.3 / (1 + scanCount)) + scanMovingAvr * (1 - (0.3 / (1 + scanCount)));
@@ -584,6 +651,17 @@ void scanTimer()
   scanLast = millis();
 }
 #endif
+
+int readIR()
+{
+  int level = analogRead(WATER_IR_PIN);
+  waterIrLevelReal = level;
+  // if (level < 50)
+  //   level = 50;
+  // if (level > 600)
+  //   level = 600;
+  return level;
+}
 
 void setup()
 {
@@ -630,13 +708,25 @@ void setup()
   mqttClient.setServer(mqttServer, 1883);
   mqttClient.setCallback(mqttCallback);
   mqttHandle();
-  mqttClient.publish(OUT_TOPIC_VENT "/gateway/boot", String(millis()).c_str());
+  mqttClient.publish(OUT_TOPIC_VENT "/debug/bootTime", String(millis()).c_str());
   IPaddress = WiFi.localIP().toString();
-  mqttClient.publish(OUT_TOPIC_VENT "/gateway/ip", IPaddress.c_str());
+  mqttClient.publish(OUT_TOPIC_VENT "/debug/ip", IPaddress.c_str());
+  mqttClient.publish(OUT_TOPIC_VENT "/debug/hostname", host);
+  waterEntryNext = millis();
+  if (waterWaitingForConsumptionCount)
+  {
+    mqttClient.subscribe(OUT_TOPIC_WATER "/total");
+    waitForStart = 5000; // Allows for 5 seconds to wait for mqtt data for retained total consumption count
+  }
+  while (millis() < waterEntryNext + waitForStart)
+  {
+    mqttHandle();
+    ArduinoOTA.handle();
+  }
+  waterWaitingForConsumptionCount = false;
+  waterLastAliveMessage = millis();
+  waterIrLevel = readIR();
   digitalWrite(LED_BUILTIN, HIGH);
-#ifdef DEBUG_SCAN_TIME
-  scanTimer();
-#endif
 }
 
 void loop()
@@ -655,20 +745,21 @@ void loop()
     webClient.stop();
   }
   mqttHandle();
-  
-  long now = millis();
-  if (now - lastMsg > MQTT_SEND_INTERVAL)
+
+  unsigned long now = millis();
+  if (now > ventEntryNext)
   {
-    //  ReqTypes rr[] = {reqtemp, reqcontrol, reqtime, reqoutput, reqspeed, reqalarm, reqinputairtemp, reqprogram, requser, reqdisplay, reqinfo}; // put another register in this line to subscribe
-    ReqTypes rr[] = {reqtemp1, reqtemp2, reqtemp3, reqcontrol, reqalarm, reqinputairtemp, reqprogram, reqdisplay, requser}; // put another register in this line to subscribe
+    ventEntryNext = now + MQTT_SEND_INTERVAL;
+    //  ventRequestTypes rr[] = {reqtemp, reqcontrol, reqtime, reqoutput, reqspeed, reqalarm, reqinputairtemp, reqprogram, requser, reqdisplay, reqinfo}; // put another register in this line to subscribe
+    ventRequestTypes rr[] = {reqtemp1, reqtemp2, reqtemp3, reqcontrol, reqalarm, reqinputairtemp, reqprogram, reqdisplay, requser}; // put another register in this line to subscribe
     for (unsigned int i = 0; i < (sizeof(rr) / sizeof(rr[0])); i++)
     {
-      ReqTypes r = rr[i];
-      char result = ReadModbus(regAddresses[r], regSizes[r], rsBuffer, regTypes[r]);
+      ventRequestTypes r = rr[i];
+      char result = ReadModbus(ventRegistrationAddresses[r], ventRegistrationSizes[r], rsBuffer, ventRegistrationTypes[r]);
       if (result == 0)
       {
         mqttClient.publish(OUT_TOPIC_VENT "/error/modbus", "0"); // no error when connecting through modbus
-        for (int i = 0; i < regSizes[r]; i++)
+        for (int i = 0; i < ventRegistrationSizes[r]; i++)
         {
           char const *name = getName(r, i);
           char numberString[10];
@@ -707,15 +798,12 @@ void loop()
               case 7: // Alarm.List_3_ID
                 if (rsBuffer[i] > 0)
                 {
-                  // itoa((rsBuffer[i]), numberString, 10);
                   sprintf(numberString, "UNKNOWN"); // Preallocate unknown if no match if found
-                  for (unsigned int p = 0; p < (sizeof(AlarmListNumber)); p++)
+                  for (unsigned int p = 0; p < (sizeof(ventAlarmListNumber)); p++)
                   {
-                    if (AlarmListNumber[p] == rsBuffer[i])
+                    if (ventAlarmListNumber[p] == rsBuffer[i])
                     {
-                      //   memset(numberString, 0, sizeof numberString);
-                      //   strcpy (numberString,AlarmListText[p].c_str());
-                      sprintf(numberString, AlarmListText[p].c_str());
+                      sprintf(numberString, ventAlarmListText[p].c_str());
                       break;
                     }
                   }
@@ -826,9 +914,77 @@ void loop()
         mqttClient.publish(OUT_TOPIC_VENT "/error/modbus", "1"); // error when connecting through modbus
       }
     }
+  }
+  if (now > waterEntryNext)
+  {
+    waterEntryNext = now + 100;
+    waterIrLevel = readIR();
+    if (waterIrLevel > waterIrMax)
+      waterIrMax = waterIrLevel; // maximum signal
+    if (waterIrLevel < waterIrMin)
+      waterIrMin = waterIrLevel;                   // minimum signal
+    waterIrMiddle = (waterIrMax + waterIrMin) / 2; // calculate middle of the signal
+    if (waterIrMiddle < 30)
+    {
+      waterIrMiddle = 30;
+    }
+    waterIrDiff = waterIrLevel - waterLastLevel; // first derivative
+    waterLastLevel = waterIrLevel;
 
-    lastMsg = now;
-    if (now > (long)1288490187)
+    // Debugging:
+    if (waterIrLevelReal > waterIrMaxReal)
+    {
+      waterIrMaxReal = waterIrLevelReal; // maximum signal
+    }
+    if (waterIrLevelReal < waterIrMinReal)
+    {
+      waterIrMinReal = waterIrLevelReal;
+    }
+    switch (waterState)
+    {
+    case 0:
+      if ((waterIrDiff < 0) && (waterIrLevel > waterIrMiddle))
+      {
+        waterState = 1;
+        if (movingAvrIrMaxCount < 2147483646)
+          movingAvrIrMax = waterIrMaxReal * (0.3 / (1 + movingAvrIrMaxCount)) + movingAvrIrMax * (1 - (0.3 / (1 + movingAvrIrMaxCount)));
+      }
+      digitalWrite(LED_BUILTIN, HIGH);
+      break;
+    case 1:
+      if ((waterIrDiff < 0) && (waterIrLevel < waterIrMiddle))
+      {
+        waterIrMax = waterIrMax - waterIrMiddle * 0.1; // for long term adjustment
+        waterState = 2;
+        if (movingAvrIrMidCount1 < 2147483646)
+          movingAvrIrMid1 = waterIrLevelReal * (0.3 / (1 + movingAvrIrMidCount1)) + movingAvrIrMid1 * (1 - (0.3 / (1 + movingAvrIrMidCount1)));
+      }
+      digitalWrite(LED_BUILTIN, LOW);
+      break;
+    case 2:
+      if ((waterIrDiff > 0) && (waterIrLevel < waterIrMiddle))
+      {
+        waterState = 3;
+        if (movingAvrIrMinCount < 2147483646)
+          movingAvrIrMin = waterIrMinReal * (0.3 / (1 + movingAvrIrMinCount)) + movingAvrIrMin * (1 - (0.3 / (1 + movingAvrIrMinCount)));
+      }
+      digitalWrite(LED_BUILTIN, HIGH);
+      break;
+    case 3:
+      if (waterIrDiff > 0 && (waterIrLevel > waterIrMiddle))
+      {
+        waterIrMin = waterIrMin + waterIrMiddle * 0.1; // long-term adjustment
+        incrementTicks(1);
+        waterState = 0;
+        if (movingAvrIrMidCount2 < 2147483646)
+          movingAvrIrMid2 = waterIrLevelReal * (0.3 / (1 + movingAvrIrMidCount2)) + movingAvrIrMid2 * (1 - (0.3 / (1 + movingAvrIrMidCount2)));
+      }
+      digitalWrite(LED_BUILTIN, LOW);
+      break;
+    default:
+      break;
+    }
+    if (waterEntryNext > (long)1288490187)
     {
       // Fix to make sure the command millis() dont overflow. This happens after 50 days and would mess up some logic above
       // Reboot if ESP has been running for approximately 30 days.
