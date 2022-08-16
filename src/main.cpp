@@ -69,7 +69,7 @@ SoftwareSerial SSerial(SERIAL_SOFTWARE_RX, SERIAL_SOFTWARE_TX); // RX, TX
 int waterIrLevel, waterIrLevelReal, waterLastLevel, waterIrDiff, waterIrMaxReal, waterIrMinReal = 1024;
 int waterIrMin = 100; // 75; // set realistic low  but about 20% higher then min. IR value found via debugging
 int waterIrMiddle;
-int waterIrMax = 400; // 435; // set realistic high but about 20% lower then max. IR value found via debugging
+int waterIrMax = 600; // 800; // set realistic high but about 20% lower then max. IR value found via debugging
 unsigned long waterEntryNext, waterLastAliveMessage;
 int waterState, waterStateLast;
 int waitForStart = 10; // Wait for mqtt commands before start
@@ -105,7 +105,7 @@ String ventAlarmListText[] = {"NONE", "HARDWARE", "TIMEOUT", "FIRE", "PRESSURE",
 String webRequestQueries[4]; // operation, group, address, value
 enum ventRequestTypes
 {
-  reqtemp1 = 0,
+  reqtemp1 = 0, // regtemp1+2+3 is separated due to modbus breakdown when reading addresses from none present  "optional print board" expansion
   reqtemp2,
   reqtemp3,
   reqalarm,
@@ -454,9 +454,9 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
   }
   else if (strcmp(topic, OUT_TOPIC_VENT "/cmd/tempset") == 0)
   {
-    if (length == 4 && payload[0] >= '0' && payload[0] <= '2')
+    if (length > 0 && inputString.toInt() >= 5 && inputString.toInt() <= 25)
     {
-      WriteModbus(TEMPSET, inputString.toInt());
+      WriteModbus(TEMPSET, inputString.toInt() * 100); // Expect temperature 23 as 2300
       mqttClient.publish(OUT_TOPIC_VENT "/cmd/tempset", "", true);
       triggeredVentilation = true;
     }
@@ -726,8 +726,14 @@ void setup()
   waterWaitingForConsumptionCount = false;
   waterLastAliveMessage = millis();
   waterIrLevel = readIR();
+  if (waterIrLevel > waterIrMax)
+  {
+    waterState = 2; // Test to see if this reduce missing count on reboots
+  }
   digitalWrite(LED_BUILTIN, HIGH);
 }
+
+bool modbusErrorActive = false;
 
 void loop()
 {
@@ -758,7 +764,11 @@ void loop()
       char result = ReadModbus(ventRegistrationAddresses[r], ventRegistrationSizes[r], rsBuffer, ventRegistrationTypes[r]);
       if (result == 0)
       {
-        mqttClient.publish(OUT_TOPIC_VENT "/error/modbus", "0"); // no error when connecting through modbus
+        if (modbusErrorActive)
+        {
+          mqttClient.publish(OUT_TOPIC_VENT "/error/modbus", "0"); // no error when connecting through modbus
+          modbusErrorActive = false;
+        }
         for (int i = 0; i < ventRegistrationSizes[r]; i++)
         {
           char const *name = getName(r, i);
@@ -770,7 +780,15 @@ void loop()
             {
             case reqcontrol:
               mqttTopic = OUT_TOPIC_VENT "/control/"; // Subscribe to the "control" register
-              itoa((rsBuffer[i]), numberString, 10);
+              if (strncmp(name, "TempSet", 7) == 0)
+              {
+                // TempSet value = 2300 is converted to 23
+                dtostrf((rsBuffer[i] / 100), 1, 0, numberString);
+              }
+              else
+              {
+                itoa((rsBuffer[i]), numberString, 10);
+              }
               break;
             case reqtime:
               mqttTopic = OUT_TOPIC_VENT "/time/"; // Subscribe to the "output" register
@@ -867,27 +885,7 @@ void loop()
               itoa((rsBuffer[i]), numberString, 10);
               break;
             case reqtemp1:
-              if (strncmp("RH", name, 2) == 0)
-              {
-                mqttTopic = OUT_TOPIC_VENT "/moist/"; // Subscribe to moisture-level
-              }
-              else
-              {
-                mqttTopic = OUT_TOPIC_VENT "/temp/"; // Subscribe to "temp" register
-              }
-              dtostrf((rsBuffer[i] / 100.0), 5, 2, numberString);
-              break;
             case reqtemp2:
-              if (strncmp("RH", name, 2) == 0)
-              {
-                mqttTopic = OUT_TOPIC_VENT "/moist/"; // Subscribe to moisture-level
-              }
-              else
-              {
-                mqttTopic = OUT_TOPIC_VENT "/temp/"; // Subscribe to "temp" register
-              }
-              dtostrf((rsBuffer[i] / 100.0), 5, 2, numberString);
-              break;
             case reqtemp3:
               if (strncmp("RH", name, 2) == 0)
               {
@@ -911,7 +909,11 @@ void loop()
       }
       else
       {
-        mqttClient.publish(OUT_TOPIC_VENT "/error/modbus", "1"); // error when connecting through modbus
+        if (modbusErrorActive == false)
+        {
+          mqttClient.publish(OUT_TOPIC_VENT "/error/modbus", "1"); // no error when connecting through modbus
+          modbusErrorActive = true;
+        }
       }
     }
   }

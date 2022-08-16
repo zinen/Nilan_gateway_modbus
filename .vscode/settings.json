@@ -47,7 +47,8 @@
         "Frost_overht",
         "SWSERIAL_8E1",
         "weekprogram"
-
-
-    ]
+    ],
+    "files.associations": {
+        "string_view": "cpp"
+    }
 }
