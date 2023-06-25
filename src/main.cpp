@@ -402,7 +402,12 @@ void mqttReconnect()
 #ifdef DEBUG_SERIAL
     Serial.println("MQTT reconnect tried limit reached. Doing reboot now.");
 #endif
-    delay(5000);
+    // Enter mode in 60 seconds to prioritize OTA
+    for (unsigned int i = 0; i < 300; i++)
+    {
+      ArduinoOTA.handle();
+      delay(200);
+    }
     // Give up and do a reboot
     ESP.restart();
   }
@@ -518,6 +523,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
   else if (strcmp(topic, OUT_TOPIC_WATER "/cmd/total") == 0)
   {
     waterConsumptionCount = inputString.toInt();
+    // incrementTicks bt zero to tell any listers the value has changed
     incrementTicks(0);
   }
   else if (strcmp(topic, OUT_TOPIC_WATER "/cmd/readout") == 0)
