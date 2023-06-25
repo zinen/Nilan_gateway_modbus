@@ -49,6 +49,10 @@ Here are some to listen on:
 
 `ventilation/#` - This gives the output of the system - fan speed etc. Remember the payloads are given in values not text.
 
+## Listen water reader related
+
+`water/total` - The totaled water measured data. The value is retained and is also used by this unit itself on reboot/update to recover totaled value.
+
 ### Write back
 
 Here are all commands you are able to send back for controlling it. I recommend sending the commands as retained messages to make sure that any faults or reboot of the controller does not affect the outcome. Retained messages are cleared once the command is accepted.
@@ -64,6 +68,13 @@ Here are all commands you are able to send back for controlling it. I recommend 
 |`ventilation/cmd/reboot`| 1 | Reboots gateway |
 |`ventilation/cmd/version`| 1 | Reports compiled date back |
 
+## Write back reader related
+
+| Command | Input |Description |
+| ---   |---| ---|
+|`water/cmd/total`| (any integer) | Set total of measurement to input value |
+|`water/cmd/readout`| (any value) | return debug data in topic `water/debug/*` |
+|`water/total`| (any value) | returns total measurement water data in same topic |
 
 # Installation
 Should run on most ESP8266 boards like: wemos D1 mini or nodeMCU.
