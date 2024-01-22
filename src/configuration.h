@@ -25,6 +25,12 @@
 #endif
 #define MQTT_SEND_INTERVAL 600000 // normally set to 180000 milliseconds = 3 minutes. Define as you like
 
+// OTA password
+#ifndef OTA_PASSWORD // If already defined skip defining it again
+#define OTA_PASSWORD "XX" // Your OTA password here
+#endif
+
+
 // Serial port
 #define SERIAL_CHOICE SERIAL_SOFTWARE // SERIAL_SOFTWARE or SERIAL_HARDWARE
 #define SERIAL_SOFTWARE_RX D2 // only needed if SERIAL is SERIAL_SOFTWARE

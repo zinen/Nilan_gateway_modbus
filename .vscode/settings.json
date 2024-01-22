@@ -2,9 +2,11 @@
     "cSpell.words": [
         "chipid",
         "dtostrf",
+        "irlvl",
         "Modbus",
         "Openhab",
-        "platformio"
+        "platformio",
+        "regtemp"
     ],
     "cSpell.ignoreWords": [
         "Gunvald",

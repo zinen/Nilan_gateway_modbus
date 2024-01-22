@@ -65,16 +65,18 @@ Here are all commands you are able to send back for controlling it. I recommend 
 |`ventilation/cmd/tempset`| 5-25 | Set temperature the celsius |
 |`ventilation/cmd/programset`| 0 - 4 | Start week program index |
 |`ventilation/cmd/update`| 1 | Gateway has OTA active always but can be hard to reach if some but in config is made. This puts gateway into OTA update mode for 60  seconds.  |
-|`ventilation/cmd/reboot`| 1 | Reboots gateway |
-|`ventilation/cmd/version`| 1 | Reports compiled date back |
+|`ventilation/cmd/reboot`| any | Reboots gateway |
+|`ventilation/cmd/version`| any | Reports compiled date back |
 
 ## Write back reader related
 
 | Command | Input |Description |
 | ---   |---| ---|
+|`water/cmd/reboot`| any | Reboots gateway |
 |`water/cmd/total`| (any integer) | Set total of measurement to input value |
-|`water/cmd/readout`| (any value) | return debug data in topic `water/debug/*` |
-|`water/total`| (any value) | returns total measurement water data in same topic |
+|`water/cmd/readout`| any | return debug data in topic `water/debug/*` |
+|`water/cmd/irlvl`| 0-1024 | Overwrites IR reader with this value until reboot or if set to zero. 0 = Overwrite turns off again. |
+
 
 # Installation
 Should run on most ESP8266 boards like: wemos D1 mini or nodeMCU.
@@ -83,7 +85,7 @@ Should run on most ESP8266 boards like: wemos D1 mini or nodeMCU.
 Edit configuration.h file to your liking including settings for wifi and mqtt broker.
 
 ## Upload to hardware
-I recommend using platform IO https://platformio.org/ inside Visual Studio Code as dependencies will be downloaded automatic i most cases due to the `platformio.ini` file.
+I recommend using platform IO https://platformio.org/ inside Visual Studio Code as dependencies will be downloaded automatic in most cases due to the `platformio.ini` file.
 
 ## Make electrical connection
 You can use both a hardware interface or a software one. Both should give you the same result. In theory they both should give the same result but I tent to use the hardware one.
@@ -98,3 +100,4 @@ This is my setup with the Nilan HMI still connected and working fine:
 
 ![connection.JPG](images/connection.JPG)
 
+For the water reader i added a CNY70 and a ethernet CAT5 cable connected to water meter about 3 meter away. 

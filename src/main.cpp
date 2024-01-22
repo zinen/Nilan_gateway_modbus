@@ -31,6 +31,7 @@
 #define SERIAL_HARDWARE 2
 #if SERIAL_CHOICE == SERIAL_SOFTWARE
 // for some reason this library keeps beeing included when building
+// even if SERIAL_CHOICE != SERIAL_SOFTWARE
 #include <SoftwareSerial.h>
 #endif
 #define HOST "NilanGW-%s" // Change this to whatever you like.
@@ -64,15 +65,16 @@ SoftwareSerial SSerial(SERIAL_SOFTWARE_RX, SERIAL_SOFTWARE_TX); // RX, TX
 #endif
 
 // Water meter variables
+int fakeIr = 0; // Used while debugging
 #define OUT_TOPIC_WATER "water"
 #define WATER_IR_PIN A0
+#define WATER_IR_LVL_HYSTERESIS 30
 int waterIrLevel, waterIrLevelReal, waterLastLevel, waterIrDiff, waterIrMaxReal, waterIrMinReal = 1024;
-int waterIrMin = 100; // 75; // set realistic low  but about 20% higher then min. IR value found via debugging
-int waterIrMiddle;
-int waterIrMax = 600; // 800; // set realistic high but about 20% lower then max. IR value found via debugging
+int waterIrMin = 100;    // 75; // set realistic low  but about 20% higher then min. IR value found via debugging
+int waterIrMiddle = 400; // Set to about the middle of the IR returned value. IR value found via debugging
+int waterIrMax = 700;    // 800; // set realistic high but about 20% lower then max. IR value found via debugging
 unsigned long waterEntryNext, waterLastAliveMessage;
 int waterState, waterStateLast;
-int waitForStart = 10; // Wait for mqtt commands before start
 int waterConsumptionCount;
 bool waterWaitingForConsumptionCount = true;
 
@@ -89,6 +91,8 @@ char chipID[12];
 const char *mqttServer = MQTT_SERVER;
 const char *mqttUsername = MQTT_USERNAME;
 const char *mqttPassword = MQTT_PASSWORD;
+const char *otaPassword = OTA_PASSWORD;
+
 WiFiServer webServer(80);
 WiFiClient wifiClient;
 String IPaddress;
@@ -377,7 +381,7 @@ void incrementTicks(int consumption = 1)
 void mqttReconnect()
 {
   int numberRetries = 0;
-  while (!mqttClient.connected() && numberRetries < 3)
+  while (!mqttClient.connected() && numberRetries < 50)
   {
     if (mqttClient.connect(chipID, mqttUsername, mqttPassword, OUT_TOPIC_VENT "/alive", 1, true, "0"))
     {
@@ -386,31 +390,26 @@ void mqttReconnect()
       mqttClient.subscribe(OUT_TOPIC_WATER "/cmd/+");
       return;
     }
-    else
-    {
+    // else
+    // {
 #ifdef DEBUG_SERIAL
-      Serial.print("failed, rc=");
-      Serial.print(mqttClient.state());
-      Serial.println(" try again in 5 seconds");
+    Serial.print("failed, rc=");
+    Serial.print(mqttClient.state());
+    Serial.println(" try again in 5 seconds");
 #endif
-      delay(2000);
-    }
-    numberRetries++;
-  }
-  if (numberRetries >= 3)
-  {
-#ifdef DEBUG_SERIAL
-    Serial.println("MQTT reconnect tried limit reached. Doing reboot now.");
-#endif
-    // Enter mode in 60 seconds to prioritize OTA
-    for (unsigned int i = 0; i < 300; i++)
+    // Delay for 5 seconds while looking for OTA
+    for (unsigned int i = 0; i < 25; i++)
     {
       ArduinoOTA.handle();
       delay(200);
     }
-    // Give up and do a reboot
-    ESP.restart();
+    numberRetries++;
   }
+#ifdef DEBUG_SERIAL
+  Serial.println("MQTT reconnect tried limit reached. Doing reboot now.");
+#endif
+  // Give up and do a reboot
+  ESP.restart();
 }
 
 void mqttCallback(char *topic, byte *payload, unsigned int length)
@@ -492,61 +491,101 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
         mqttReconnect();
       }
     }
-    mqttClient.publish(OUT_TOPIC_VENT "/cmd/update", "", true); // Clear any retained messages
-    delay(1);
-    mqttClient.publish(OUT_TOPIC_VENT "/cmd/update", "0");
-  }
-  else if (strcmp(topic, OUT_TOPIC_VENT "/cmd/reboot") == 0)
-  {
-    if (payload[0] == '1')
+    if (length > 0 && payload[0] != '0')
     {
-      mqttClient.publish(OUT_TOPIC_VENT "/cmd/reboot", "0");
+      mqttClient.publish(OUT_TOPIC_VENT "/cmd/update", "", true); // Clear any retained messages
+      delay(5);
+      mqttClient.publish(OUT_TOPIC_VENT "/cmd/update", "0");
+    }
+  }
+  else if (strcmp(topic, OUT_TOPIC_VENT "/cmd/reboot") == 0 || strcmp(topic, OUT_TOPIC_WATER "/cmd/reboot") == 0)
+  {
+    if (length > 0)
+    {
+      mqttClient.publish(OUT_TOPIC_VENT "/cmd/reboot", "", true);  // Clear any retained messages
+      mqttClient.publish(OUT_TOPIC_WATER "/cmd/reboot", "", true); // Clear any retained messages
+      delay(150);                                                  // FIX: wait before reboot to make sure any retained commands are sent back to broker
+      // mqttClient.publish(OUT_TOPIC_VENT "/cmd/reboot", "0");
       ESP.restart();
     }
   }
   else if (strcmp(topic, OUT_TOPIC_VENT "/cmd/version") == 0)
   {
-    if (inputString != String(COMPILED))
+    if (length > 0 && inputString != String(COMPILED))
     {
+      mqttClient.publish(OUT_TOPIC_VENT "/cmd/version", "", true);
+      delay(5);
       mqttClient.publish(OUT_TOPIC_VENT "/cmd/version", String(COMPILED).c_str());
     }
   }
   else if (strcmp(topic, OUT_TOPIC_VENT "/cmd/readout") == 0)
   {
-    if (payload[0] == '1')
+    if (length > 0)
     {
       triggeredVentilation = true;
-      mqttClient.publish(OUT_TOPIC_VENT "/cmd/readout", "");
+      mqttClient.publish(OUT_TOPIC_VENT "/cmd/readout", "", true);
     }
   }
   // Start of water topics
   else if (strcmp(topic, OUT_TOPIC_WATER "/cmd/total") == 0)
   {
-    waterConsumptionCount = inputString.toInt();
-    // incrementTicks bt zero to tell any listers the value has changed
-    incrementTicks(0);
+    if (length > 0)
+    {
+      mqttClient.publish(OUT_TOPIC_WATER "/cmd/total", "", true);
+      waterConsumptionCount = inputString.toInt();
+      // incrementTicks bt zero to tell any listers the value has changed
+      incrementTicks(0);
+    }
   }
   else if (strcmp(topic, OUT_TOPIC_WATER "/cmd/readout") == 0)
   {
-    mqttClient.publish(OUT_TOPIC_WATER "/debug/irLevel", String(waterIrLevel).c_str());
-    mqttClient.publish(OUT_TOPIC_WATER "/debug/irLevelReal", String(waterIrLevelReal).c_str());
-    mqttClient.publish(OUT_TOPIC_WATER "/debug/irMin", String(waterIrMin).c_str());
-    mqttClient.publish(OUT_TOPIC_WATER "/debug/irMax", String(waterIrMax).c_str());
-    mqttClient.publish(OUT_TOPIC_WATER "/debug/irMaxReal", String(waterIrMaxReal).c_str());
-    mqttClient.publish(OUT_TOPIC_WATER "/debug/irMinReal", String(waterIrMinReal).c_str());
-    mqttClient.publish(OUT_TOPIC_WATER "/debug/state", String(waterState).c_str());
-    mqttClient.publish(OUT_TOPIC_WATER "/debug/movingAvrIrMin", String(floor(movingAvrIrMin * 100) / 100).c_str());
-    mqttClient.publish(OUT_TOPIC_WATER "/debug/movingAvrIrMax", String(floor(movingAvrIrMax * 100) / 100).c_str());
-    mqttClient.publish(OUT_TOPIC_WATER "/debug/movingAvrIrMid1", String(floor(movingAvrIrMid1 * 100) / 100).c_str());
-    mqttClient.publish(OUT_TOPIC_WATER "/debug/movingAvrIrMid2", String(floor(movingAvrIrMid2 * 100) / 100).c_str());
-    mqttClient.publish(OUT_TOPIC_WATER "/debug/movingAvrIrMinCount", String(movingAvrIrMinCount).c_str());
+    if (length > 0)
+    {
+      mqttClient.publish(OUT_TOPIC_WATER "/cmd/readout", "", true); // Clear any retained messages
+      mqttClient.publish(OUT_TOPIC_WATER "/debug/irLevel", String(waterIrLevel).c_str());
+      mqttClient.publish(OUT_TOPIC_WATER "/debug/irLevelReal", String(waterIrLevelReal).c_str());
+      mqttClient.publish(OUT_TOPIC_WATER "/debug/irMin", String(waterIrMin).c_str());
+      mqttClient.publish(OUT_TOPIC_WATER "/debug/irMax", String(waterIrMax).c_str());
+      mqttClient.publish(OUT_TOPIC_WATER "/debug/IrMiddle", String(waterIrMiddle).c_str());
+      mqttClient.publish(OUT_TOPIC_WATER "/debug/irMaxReal", String(waterIrMaxReal).c_str());
+      mqttClient.publish(OUT_TOPIC_WATER "/debug/irMinReal", String(waterIrMinReal).c_str());
+      mqttClient.publish(OUT_TOPIC_WATER "/debug/state", String(waterState).c_str());
+      mqttClient.publish(OUT_TOPIC_WATER "/debug/movingAvrIrMin", String(floor(movingAvrIrMin * 100) / 100).c_str());
+      mqttClient.publish(OUT_TOPIC_WATER "/debug/movingAvrIrMax", String(floor(movingAvrIrMax * 100) / 100).c_str());
+      mqttClient.publish(OUT_TOPIC_WATER "/debug/movingAvrIrMid1", String(floor(movingAvrIrMid1 * 100) / 100).c_str());
+      mqttClient.publish(OUT_TOPIC_WATER "/debug/movingAvrIrMid2", String(floor(movingAvrIrMid2 * 100) / 100).c_str());
+      mqttClient.publish(OUT_TOPIC_WATER "/debug/movingAvrIrMinCount", String(movingAvrIrMinCount).c_str());
+    }
+  }
+  else if (strcmp(topic, OUT_TOPIC_WATER "/cmd/irlvl") == 0)
+  {
+    if (length > 0 && inputString.toInt() >= 1 && inputString.toInt() <= 1024)
+    {
+      fakeIr = inputString.toInt();
+      // WriteModbus(TEMPSET, inputString.toInt() * 100); // Expect temperature 23 as 2300
+      // mqttClient.publish(OUT_TOPIC_VENT "/cmd/tempset", "", true);
+      // triggeredVentilation = true;
+    }
+    else if (payload[0] == '0')
+    {
+      // Do nothing
+      if (fakeIr > 0)
+        fakeIr = 0;
+    }
+    else if (length > 0)
+    {
+      delay(5);
+      mqttClient.publish(OUT_TOPIC_WATER "/cmd/irlvl", "0");
+      if (fakeIr > 0)
+        fakeIr = 0;
+    }
+    mqttClient.publish(OUT_TOPIC_WATER "/cmd/irlvl", "", true);
   }
   else if (waterWaitingForConsumptionCount && strcmp(topic, OUT_TOPIC_WATER "/total") == 0)
   {
     waterWaitingForConsumptionCount = false;
     mqttClient.unsubscribe(OUT_TOPIC_WATER "/total");
     waterConsumptionCount = inputString.toInt(); // Convert char to int. On error returns zero
-    waitForStart = 0;
     mqttClient.publish(OUT_TOPIC_WATER "/debug/totalRecovery", inputString.c_str());
   }
   else
@@ -662,10 +701,25 @@ int readIR()
 {
   int level = analogRead(WATER_IR_PIN);
   waterIrLevelReal = level;
+  if (fakeIr > 0)
+    level = fakeIr;
   // if (level < 50)
   //   level = 50;
   // if (level > 600)
   //   level = 600;
+  if (level > waterIrMax)
+  {
+    waterIrMax = level; // maximum signal
+  }
+  else if (level < waterIrMin)
+  {
+    waterIrMin = level;                            // minimum signal
+    waterIrMiddle = (waterIrMax + waterIrMin) / 2; // calculate middle of the signal
+  }
+  if (waterIrMiddle < 100)
+  {
+    waterIrMiddle = 200;
+  }
   return level;
 }
 
@@ -696,6 +750,7 @@ void setup()
     ESP.restart();
   }
   ArduinoOTA.setHostname(host);
+  ArduinoOTA.setPassword(otaPassword);
   ArduinoOTA.begin();
   webServer.begin();
 
@@ -722,9 +777,9 @@ void setup()
   if (waterWaitingForConsumptionCount)
   {
     mqttClient.subscribe(OUT_TOPIC_WATER "/total");
-    waitForStart = 5000; // Allows for 5 seconds to wait for mqtt data for retained total consumption count
   }
-  while (millis() < waterEntryNext + waitForStart)
+  // Allows for 5 seconds to wait for mqtt data for retained total consumption count
+  while (millis() < waterEntryNext + 5000 && waterWaitingForConsumptionCount)
   {
     mqttHandle();
     ArduinoOTA.handle();
@@ -926,55 +981,64 @@ void loop()
   if (now > waterEntryNext)
   {
     waterEntryNext = now + 100;
+    // readIR also writes to global var waterIrLevelReal the real read value
     waterIrLevel = readIR();
-    if (waterIrLevel > waterIrMax)
-      waterIrMax = waterIrLevel; // maximum signal
-    if (waterIrLevel < waterIrMin)
-      waterIrMin = waterIrLevel;                   // minimum signal
-    waterIrMiddle = (waterIrMax + waterIrMin) / 2; // calculate middle of the signal
-    if (waterIrMiddle < 30)
-    {
-      waterIrMiddle = 30;
-    }
     waterIrDiff = waterIrLevel - waterLastLevel; // first derivative
-    waterLastLevel = waterIrLevel;
-
+    // Hysteresis to remove small differences in IR level reads
+    if (abs(waterIrDiff) < WATER_IR_LVL_HYSTERESIS)
+    {
+      waterIrLevel = waterLastLevel;
+      waterIrDiff = 0;
+    }
+    else
+    {
+      waterLastLevel = waterIrLevel;
+    }
     // Debugging:
     if (waterIrLevelReal > waterIrMaxReal)
     {
       waterIrMaxReal = waterIrLevelReal; // maximum signal
     }
-    if (waterIrLevelReal < waterIrMinReal)
+    else if (waterIrLevelReal < waterIrMinReal)
     {
       waterIrMinReal = waterIrLevelReal;
     }
     switch (waterState)
     {
     case 0:
-      if ((waterIrDiff < 0) && (waterIrLevel > waterIrMiddle))
+      if (waterIrDiff < 0 && (waterIrLevel > waterIrMiddle))
       {
         waterState = 1;
         if (movingAvrIrMaxCount < 2147483646)
+        {
           movingAvrIrMax = waterIrMaxReal * (0.3 / (1 + movingAvrIrMaxCount)) + movingAvrIrMax * (1 - (0.3 / (1 + movingAvrIrMaxCount)));
+          movingAvrIrMaxCount++;
+        }
       }
       digitalWrite(LED_BUILTIN, HIGH);
       break;
     case 1:
-      if ((waterIrDiff < 0) && (waterIrLevel < waterIrMiddle))
+      if (waterIrDiff < 0 && (waterIrLevel < waterIrMiddle))
       {
         waterIrMax = waterIrMax - waterIrMiddle * 0.1; // for long term adjustment
         waterState = 2;
         if (movingAvrIrMidCount1 < 2147483646)
+        {
           movingAvrIrMid1 = waterIrLevelReal * (0.3 / (1 + movingAvrIrMidCount1)) + movingAvrIrMid1 * (1 - (0.3 / (1 + movingAvrIrMidCount1)));
+          movingAvrIrMidCount1++;
+        }
       }
       digitalWrite(LED_BUILTIN, LOW);
       break;
     case 2:
-      if ((waterIrDiff > 0) && (waterIrLevel < waterIrMiddle))
+      if (waterIrDiff > 0 && (waterIrLevel < waterIrMiddle))
       {
         waterState = 3;
         if (movingAvrIrMinCount < 2147483646)
+        {
           movingAvrIrMin = waterIrMinReal * (0.3 / (1 + movingAvrIrMinCount)) + movingAvrIrMin * (1 - (0.3 / (1 + movingAvrIrMinCount)));
+          movingAvrIrMinCount++;
+        }
       }
       digitalWrite(LED_BUILTIN, HIGH);
       break;
@@ -985,7 +1049,10 @@ void loop()
         incrementTicks(1);
         waterState = 0;
         if (movingAvrIrMidCount2 < 2147483646)
+        {
           movingAvrIrMid2 = waterIrLevelReal * (0.3 / (1 + movingAvrIrMidCount2)) + movingAvrIrMid2 * (1 - (0.3 / (1 + movingAvrIrMidCount2)));
+          movingAvrIrMidCount2++;
+        }
       }
       digitalWrite(LED_BUILTIN, LOW);
       break;
