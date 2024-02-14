@@ -18,12 +18,18 @@
 // MQTT settings
 #ifndef MQTT_SERVER // If already defined skip defining it again
 #define MQTT_SERVER   "XX" // Put in the IP addresses of your MQTT broker
+#define MQTT_SERVER_PORT  1883  // Put in the IP addresses of your MQTT broker
 #endif
 #ifndef MQTT_USERNAME // If already defined skip defining it again
 #define MQTT_USERNAME NULL // Username for the MQTT broker (NULL if no username is required)
 #define MQTT_PASSWORD NULL // Password for the MQTT broker (NULL if no password is required)
 #endif
 #define MQTT_SEND_INTERVAL 600000 // normally set to 180000 milliseconds = 3 minutes. Define as you like
+
+// Web server
+#ifndef WEB_SERVER_PORT // If already defined skip defining it again
+#define WEB_SERVER_PORT 80
+#endif
 
 // OTA password
 #ifndef OTA_PASSWORD // If already defined skip defining it again

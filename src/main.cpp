@@ -88,12 +88,14 @@ int movingAvrIrMinCount, movingAvrIrMaxCount, movingAvrIrMidCount1, movingAvrIrM
 const char *ssid = WIFI_SSID;
 const char *password = WIFI_PASSWORD;
 char chipID[12];
+char host[64];
 const char *mqttServer = MQTT_SERVER;
+unsigned short mqttServerPort = MQTT_SERVER_PORT;
 const char *mqttUsername = MQTT_USERNAME;
 const char *mqttPassword = MQTT_PASSWORD;
 const char *otaPassword = OTA_PASSWORD;
 
-WiFiServer webServer(80);
+WiFiServer webServer(WEB_SERVER_PORT);
 WiFiClient wifiClient;
 String IPaddress;
 PubSubClient mqttClient(wifiClient);
@@ -378,26 +380,82 @@ void incrementTicks(int consumption = 1)
   mqttClient.publish(OUT_TOPIC_WATER "/total", String(waterConsumptionCount).c_str(), true); // Retain value
 }
 
+void connectToWiFi()
+{
+  WiFi.begin(ssid, password);
+#ifdef DEBUG_SERIAL
+  Serial.print("Wifi trying to connect to: ");
+  Serial.println(ssid);
+#endif
+  int numberRetries = 0;
+#define wifiRetryCount 60
+  while (WiFi.waitForConnectResult() != WL_CONNECTED)
+  {
+    if (numberRetries > wifiRetryCount)
+    {
+#ifdef DEBUG_SERIAL
+      Serial.println("Wifi connection not up within timeout. Doing reboot now.");
+      Serial.print("RSSI: ");
+      Serial.println(WiFi.RSSI());
+#endif
+      delay(5000);
+      // Give up and do a reboot
+      ESP.restart();
+    }
+    else
+    {
+#ifdef DEBUG_SERIAL
+      Serial.print("Wifi connection timeout ");
+      Serial.print(numberRetries);
+      Serial.print(" of ");
+      Serial.println(wifiRetryCount);
+#endif
+      delay(5000);
+    }
+    numberRetries++;
+  }
+#ifdef DEBUG_SERIAL
+  Serial.print("Wifi connection up. On ip: ");
+  Serial.println(WiFi.localIP());
+#endif
+  ArduinoOTA.setHostname(host);
+  ArduinoOTA.setPassword(otaPassword);
+  ArduinoOTA.begin(false); // Sec: Disable mDns if not used
+  webServer.begin();
+}
+
 void mqttReconnect()
 {
   int numberRetries = 0;
-  while (!mqttClient.connected() && numberRetries < 50)
+#define mqttRetryCount 50
+  while (!mqttClient.connected() && numberRetries < mqttRetryCount)
   {
     if (mqttClient.connect(chipID, mqttUsername, mqttPassword, OUT_TOPIC_VENT "/alive", 1, true, "0"))
     {
+#ifdef DEBUG_SERIAL
+      Serial.println("MQTT connection up. Subscribing to topics now.");
+#endif
       mqttClient.publish(OUT_TOPIC_VENT "/alive", "1", true);
       mqttClient.subscribe(OUT_TOPIC_VENT "/cmd/+");
       mqttClient.subscribe(OUT_TOPIC_WATER "/cmd/+");
       return;
     }
-    // else
-    // {
 #ifdef DEBUG_SERIAL
-    Serial.print("failed, rc=");
+    Serial.print("MQTT connect failed, rc=");
     Serial.print(mqttClient.state());
-    Serial.println(" try again in 5 seconds");
+    Serial.print(" trying again in 5 seconds. Tries left ");
+    Serial.print(numberRetries);
+    Serial.print(" of ");
+    Serial.println(mqttRetryCount);
 #endif
-    // Delay for 5 seconds while looking for OTA
+    if (WiFi.status() != WL_CONNECTED)
+    {
+#ifdef DEBUG_SERIAL
+      Serial.println("WiFi connection lost while MQTT trying to reconnect. Reconnecting to wifi...");
+#endif
+      connectToWiFi();
+    }
+    // Delay for 5 seconds (= 25*200ms) while looking for OTA
     for (unsigned int i = 0; i < 25; i++)
     {
       ArduinoOTA.handle();
@@ -612,13 +670,25 @@ bool readRequest(WiFiClient &client)
   webRequestQueries[3] = "";
 
   int n = -1;
+#ifdef DEBUG_SERIAL
+  Serial.print("Web request read started from ");
+  Serial.print(client.remoteIP());
+  Serial.println(". Content on next line:");
+#endif
   while (client.connected())
   {
     if (client.available())
     {
       char c = client.read();
+#ifdef DEBUG_SERIAL
+      Serial.print(c);
+#endif
       if (c == '\n')
       {
+#ifdef DEBUG_SERIAL
+        Serial.println("");
+        Serial.println("Web request read ended in failure. Wrong input.");
+#endif
         return false;
       }
       else if (c == '/')
@@ -631,11 +701,17 @@ bool readRequest(WiFiClient &client)
       }
       else if (c == ' ' && n >= 0 && n < 4)
       {
+#ifdef DEBUG_SERIAL
+        Serial.println("");
+        Serial.println("Web request read ended ok.");
+#endif
         return true;
       }
     }
   }
-
+#ifdef DEBUG_SERIAL
+  Serial.println("Web request read ended in failure. Client closed connection.");
+#endif
   return false;
 }
 
@@ -725,34 +801,18 @@ int readIR()
 
 void setup()
 {
-  char host[64];
   sprintf(chipID, "%08X", ESP.getChipId());
   sprintf(host, HOST, chipID);
 #ifdef DEBUG_SERIAL
   Serial.begin(115200);
-  Serial.println("Started");
+  Serial.print("Started ");
   Serial.println("chipID: " + String(host));
 #endif
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW); // Reverse meaning. LOW=LED ON
   WiFi.mode(WIFI_STA);
   WiFi.hostname(host);
-  WiFi.begin(ssid, password);
-  while (WiFi.waitForConnectResult() != WL_CONNECTED)
-  {
-#ifdef DEBUG_SERIAL
-    Serial.println("Wifi connection not up within timeout. Doing reboot now.");
-    Serial.print("RSSI: ");
-    Serial.println(WiFi.RSSI());
-#endif
-    delay(5000);
-    // Give up and do a reboot
-    ESP.restart();
-  }
-  ArduinoOTA.setHostname(host);
-  ArduinoOTA.setPassword(otaPassword);
-  ArduinoOTA.begin();
-  webServer.begin();
+  connectToWiFi();
 
 #if SERIAL_CHOICE == SERIAL_SOFTWARE
 #warning Compiling for software serial
@@ -766,7 +826,7 @@ void setup()
 #error hardware og serial serial port?
 #endif
 
-  mqttClient.setServer(mqttServer, 1883);
+  mqttClient.setServer(mqttServer, mqttServerPort);
   mqttClient.setCallback(mqttCallback);
   mqttHandle();
   mqttClient.publish(OUT_TOPIC_VENT "/debug/bootTime", String(millis()).c_str());
@@ -798,6 +858,14 @@ bool modbusErrorActive = false;
 
 void loop()
 {
+  // Check if WiFi is still connected
+  if (WiFi.status() != WL_CONNECTED)
+  {
+#ifdef DEBUG_SERIAL
+    Serial.println("WiFi connection lost. Reconnecting...");
+#endif
+    connectToWiFi();
+  }
   ArduinoOTA.handle();
   WiFiClient webClient = webServer.available();
   if (webClient)
@@ -1059,10 +1127,10 @@ void loop()
     default:
       break;
     }
-    if (waterEntryNext > (long)1288490187)
+    if (waterEntryNext > (unsigned long)4294900000) // 1288490187)
     {
       // Fix to make sure the command millis() dont overflow. This happens after 50 days and would mess up some logic above
-      // Reboot if ESP has been running for approximately 30 days.
+      // Reboot if ESP has been running for approximately 49 days.
       ESP.restart();
     }
   }
