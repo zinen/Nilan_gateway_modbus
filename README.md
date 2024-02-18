@@ -22,17 +22,17 @@ You can get some json values from the Nilan by calling to it via HTTP. Just use 
 
 `http://[ip]/get/[adress]/[amountOfAdresessToRead]/[0=InputRegister(default),1=HoldingRegister]`- This would make you able to read raw data from controller 
 
-`http://[ip]/set/[group]/[adress]/[value]`- This would make you able to send commands through HTTP 
+`http://[ip]/set/[group]/[adress]/[value]` + header of "Key: Password" - This would make you able to send commands through HTTP.
 
 
 
 e.g
 
-`http://10.0.1.16/read/app` This is a great starter to give you info about the modbus connection being ok as this reads from the safest area of the modbus registers. Other commands might fail as controller don't know the status of the requested index e.g. if sensor is not connected or optional board is not connected.
+`http://10.0.1.16/read/app` - This is a great starter to give you info about the modbus connection being ok as this reads from the safest area of the modbus registers. Other commands might fail as controller don't know the status of the requested index e.g. if sensor is not connected or optional board is not connected.
 
-`http://10.0.1.16/get/610/6/1` Will return read values of addresses 610-615 in holding register range. 
+`http://10.0.1.16/get/610/6/1` - Will return read values of addresses 610-615 in holding register range. 
 
-`http://10.0.1.16/set/control/1004/2700` This will set your temperature to 27 degrees. 
+`http://10.0.1.16/set/1004/2700` + header of "Key: Password" - This will set your temperature to 27 degrees. 
 
 
 ## Getting values by MQTT:

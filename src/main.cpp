@@ -258,6 +258,9 @@ char ReadModbus(uint16_t addr, uint8_t sizer, int16_t *vals, int type)
   return result;
 }
 
+String httpMethod;
+String httpInputKey;
+
 JsonObject HandleRequest(JsonDocument &doc)
 {
   JsonObject root = doc.to<JsonObject>();
@@ -317,14 +320,25 @@ JsonObject HandleRequest(JsonDocument &doc)
     root["requestAddress"] = address;
     root["requestNumber"] = nums;
   }
-  else if (webRequestQueries[0] == "set" && webRequestQueries[2] != "" && webRequestQueries[3] != "")
+  else if (webRequestQueries[0] == "set" && webRequestQueries[1] != "" && webRequestQueries[2] != "")
   {
-    int address = atoi(webRequestQueries[2].c_str());
-    int value = atoi(webRequestQueries[3].c_str());
-    char result = WriteModbus(address, value);
-    root["result"] = result;
-    root["address"] = address;
-    root["value"] = value;
+    if (httpInputKey == WEB_SERVER_KEY)
+    {
+      int address = atoi(webRequestQueries[1].c_str());
+      int value = atoi(webRequestQueries[2].c_str());
+      char result = WriteModbus(address, value);
+      root["result"] = result;
+      root["address"] = address;
+      root["value"] = value;
+      if (result != 0)
+      {
+        root["status"] = "Modbus connection failed";
+      }
+    }
+    else
+    {
+      root["status"] = "Unauthorized";
+    }
   }
   else if (webRequestQueries[0] == "get" && webRequestQueries[1] >= "0" && webRequestQueries[2] > "0")
   {
@@ -664,12 +678,13 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
 
 bool readRequest(WiFiClient &client)
 {
+  int lineIndex = -1;
+  httpMethod = "";
+  httpInputKey = "";
   webRequestQueries[0] = "";
   webRequestQueries[1] = "";
   webRequestQueries[2] = "";
   webRequestQueries[3] = "";
-
-  int n = -1;
 #ifdef DEBUG_SERIAL
   Serial.print("Web request read started from ");
   Serial.print(client.remoteIP());
@@ -677,36 +692,69 @@ bool readRequest(WiFiClient &client)
 #endif
   while (client.connected())
   {
-    if (client.available())
+    lineIndex++;
+    String line = client.readStringUntil('\n');
+    if (line == "\n" || line == "" || !client.available())
     {
-      char c = client.read();
-#ifdef DEBUG_SERIAL
-      Serial.print(c);
-#endif
-      if (c == '\n')
+      if (lineIndex == 0)
       {
 #ifdef DEBUG_SERIAL
-        Serial.println("");
         Serial.println("Web request read ended in failure. Wrong input.");
 #endif
         return false;
       }
-      else if (c == '/')
-      {
-        n++;
-      }
-      else if (c != ' ' && n >= 0 && n < 4)
-      {
-        webRequestQueries[n] += c;
-      }
-      else if (c == ' ' && n >= 0 && n < 4)
-      {
 #ifdef DEBUG_SERIAL
-        Serial.println("");
-        Serial.println("Web request read ended ok.");
-#endif
-        return true;
+      Serial.print(httpMethod);
+      Serial.print(" path=[");
+      for (int i = 0; i < 4; i++)
+      {
+        Serial.print(i);
+        Serial.print(":");
+        Serial.print(webRequestQueries[i]);
+        if (i < 3)
+          Serial.print(", ");
       }
+
+      if (httpInputKey.length() > 0)
+      {
+        Serial.print("] Key: ");
+        Serial.println(httpInputKey);
+      }
+      else
+      {
+        Serial.println("]");
+      }
+#endif
+      return true;
+    }
+
+    if (lineIndex == 0)
+    {
+      // First line this contains something like: GET /api HTTP/1.1
+      int firstSpace = line.indexOf(' ');
+      int secondSpace = line.indexOf(' ', firstSpace + 1);
+      httpMethod = line.substring(0, firstSpace); // Will be GET or POST or ...
+      String path = line.substring(firstSpace + 1, secondSpace);
+      // Find the positions of the slashes
+      int slashPositions[3]; // Array to store the positions of slashes
+      for (int i = 0; i < 3; i++)
+      {
+        slashPositions[i] = path.indexOf('/', (i == 0) ? 1 : slashPositions[i - 1] + 1);
+        if (slashPositions[i] == -1)
+        {
+          slashPositions[i] = path.length();
+        }
+      }
+      webRequestQueries[0] = path.substring(1, slashPositions[0]);
+      webRequestQueries[1] = path.substring(slashPositions[0] + 1, slashPositions[1]);
+      webRequestQueries[2] = path.substring(slashPositions[1] + 1, slashPositions[2]);
+      webRequestQueries[3] = path.substring(slashPositions[2] + 1);
+    }
+    // Check for the custom header "Key"
+    if (line.startsWith("Key:"))
+    {
+      httpInputKey = line.substring(4); // Assuming "Key: " is 5 characters long
+      httpInputKey.trim();              // Remove leading and trailing whitespace
     }
   }
 #ifdef DEBUG_SERIAL

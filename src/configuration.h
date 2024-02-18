@@ -30,6 +30,9 @@
 #ifndef WEB_SERVER_PORT // If already defined skip defining it again
 #define WEB_SERVER_PORT 80
 #endif
+#ifndef WEB_SERVER_KEY // If already defined skip defining it again
+#define WEB_SERVER_KEY "12345"
+#endif
 
 // OTA password
 #ifndef OTA_PASSWORD // If already defined skip defining it again
