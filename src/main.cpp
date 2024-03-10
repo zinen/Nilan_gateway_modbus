@@ -73,7 +73,7 @@ int waterIrLevel, waterIrLevelReal, waterLastLevel, waterIrDiff, waterIrMaxReal,
 int waterIrMin = 100;    // 75; // set realistic low  but about 20% higher then min. IR value found via debugging
 int waterIrMiddle = 400; // Set to about the middle of the IR returned value. IR value found via debugging
 int waterIrMax = 700;    // 800; // set realistic high but about 20% lower then max. IR value found via debugging
-unsigned long waterEntryNext, waterLastAliveMessage;
+unsigned long waterEntryNext;
 int waterState, waterStateLast;
 int waterConsumptionCount;
 bool waterWaitingForConsumptionCount = true;
@@ -386,64 +386,121 @@ JsonObject HandleRequest(JsonDocument &doc)
   return root;
 }
 
+bool mqttSendOnConnectWater = false;
+
 void incrementTicks(int consumption = 1)
 {
   waterConsumptionCount += consumption;
-  char intToChar[12];
-  sprintf(intToChar, "%d", waterConsumptionCount);
-  mqttClient.publish(OUT_TOPIC_WATER "/total", String(waterConsumptionCount).c_str(), true); // Retain value
+  if (mqttClient.connected() && WiFi.status() == WL_CONNECTED)
+  {
+    char intToChar[12];
+    sprintf(intToChar, "%d", waterConsumptionCount);
+    mqttClient.publish(OUT_TOPIC_WATER "/total", String(waterConsumptionCount).c_str(), true); // Retain value
+  }
+  else if (consumption > 0 && mqttSendOnConnectWater == false)
+  {
+    mqttSendOnConnectWater = true;
+  }
 }
 
-void connectToWiFi()
+#define WIFI_CONNECT_TIMEOUT 300000 // Maximum time to wait for WiFi connection in milliseconds
+enum connectState
 {
-  WiFi.begin(ssid, password);
-#ifdef DEBUG_SERIAL
-  Serial.print("Wifi trying to connect to: ");
-  Serial.println(ssid);
-#endif
-  int numberRetries = 0;
-#define wifiRetryCount 60
-  while (WiFi.waitForConnectResult() != WL_CONNECTED)
+  CONNECT_START,
+  CONNECT_WAIT,
+  CONNECT_SUCCESS,
+  CONNECT_FAILURE
+};
+
+void wifiHandle()
+{
+  static unsigned long wifiConnectFailTime = 0;
+  static connectState wifiConnectState = CONNECT_START;
+  // static int numberRetries = 0;
+  switch (wifiConnectState)
   {
-    if (numberRetries > wifiRetryCount)
+  case CONNECT_START:
+    WiFi.begin(ssid, password);
+#ifdef DEBUG_SERIAL
+    Serial.print("Wifi trying to connect to: ");
+    Serial.println(ssid);
+#endif
+    wifiConnectState = CONNECT_WAIT;
+    wifiConnectFailTime = millis() + WIFI_CONNECT_TIMEOUT;
+    // numberRetries = 0;
+    break;
+
+  case CONNECT_WAIT:
+    if (WiFi.waitForConnectResult() == WL_CONNECTED)
+    {
+      wifiConnectState = CONNECT_SUCCESS;
+#ifdef DEBUG_SERIAL
+      Serial.print("Wifi connection up. On ip: ");
+      Serial.println(WiFi.localIP());
+#endif
+      ArduinoOTA.setHostname(host);
+      ArduinoOTA.setPassword(otaPassword);
+      ArduinoOTA.begin(false); // Sec: Disable mDns if not used
+      webServer.begin();
+      wifiConnectState = CONNECT_SUCCESS;
+      // wifiConnectState = CONNECT_START; // Reset state for future connections
+      break;
+    }
+    else if (millis() > wifiConnectFailTime)
+    {
+      wifiConnectState = CONNECT_FAILURE;
+    }
+    // numberRetries++;
+    // Serial.print("Wifi connect failed, tries: ");
+    // Serial.println(numberRetries);
+    break;
+  case CONNECT_SUCCESS:
+    if (WiFi.status() != WL_CONNECTED)
     {
 #ifdef DEBUG_SERIAL
-      Serial.println("Wifi connection not up within timeout. Doing reboot now.");
-      Serial.print("RSSI: ");
-      Serial.println(WiFi.RSSI());
+      Serial.println("WiFi connection lost. Reconnecting...");
 #endif
-      delay(5000);
-      // Give up and do a reboot
-      ESP.restart();
+      wifiConnectState = CONNECT_START;
     }
-    else
-    {
+    break;
+  case CONNECT_FAILURE:
 #ifdef DEBUG_SERIAL
-      Serial.print("Wifi connection timeout ");
-      Serial.print(numberRetries);
-      Serial.print(" of ");
-      Serial.println(wifiRetryCount);
+    Serial.println("Wifi connection not up within timeout. Doing reboot now.");
+    Serial.print("RSSI: ");
+    Serial.println(WiFi.RSSI());
 #endif
-      delay(5000);
-    }
-    numberRetries++;
+    delay(1000);
+    // Give up and do a reboot
+    ESP.restart();
+
+    break;
   }
-#ifdef DEBUG_SERIAL
-  Serial.print("Wifi connection up. On ip: ");
-  Serial.println(WiFi.localIP());
-#endif
-  ArduinoOTA.setHostname(host);
-  ArduinoOTA.setPassword(otaPassword);
-  ArduinoOTA.begin(false); // Sec: Disable mDns if not used
-  webServer.begin();
 }
 
 void mqttReconnect()
 {
-  int numberRetries = 0;
+  static unsigned long mqttConnectNext = 0;
+  static connectState mqttConnectState = CONNECT_START;
+  static int numberRetries = 0;
 #define mqttRetryCount 50
-  while (!mqttClient.connected() && numberRetries < mqttRetryCount)
+  switch (mqttConnectState)
   {
+  case CONNECT_SUCCESS:
+    if (!mqttClient.connected())
+    {
+      mqttConnectState = CONNECT_START;
+    }
+  case CONNECT_WAIT:
+    if (millis() > mqttConnectNext)
+    {
+      mqttConnectState = CONNECT_START;
+    }
+    else
+    {
+      break;
+    }
+    break;
+  case CONNECT_START:
     if (mqttClient.connect(chipID, mqttUsername, mqttPassword, OUT_TOPIC_VENT "/alive", 1, true, "0"))
     {
 #ifdef DEBUG_SERIAL
@@ -452,8 +509,16 @@ void mqttReconnect()
       mqttClient.publish(OUT_TOPIC_VENT "/alive", "1", true);
       mqttClient.subscribe(OUT_TOPIC_VENT "/cmd/+");
       mqttClient.subscribe(OUT_TOPIC_WATER "/cmd/+");
+      if (mqttSendOnConnectWater)
+      {
+        mqttSendOnConnectWater = false;
+        incrementTicks(0);
+      }
+      mqttConnectState = CONNECT_SUCCESS;
+      numberRetries = 0;
       return;
     }
+    numberRetries++;
 #ifdef DEBUG_SERIAL
     Serial.print("MQTT connect failed, rc=");
     Serial.print(mqttClient.state());
@@ -462,26 +527,49 @@ void mqttReconnect()
     Serial.print(" of ");
     Serial.println(mqttRetryCount);
 #endif
-    if (WiFi.status() != WL_CONNECTED)
+    if (numberRetries > mqttRetryCount)
+    {
+      mqttConnectState = CONNECT_FAILURE;
+    }
+    else if (WiFi.status() != WL_CONNECTED)
     {
 #ifdef DEBUG_SERIAL
       Serial.println("WiFi connection lost while MQTT trying to reconnect. Reconnecting to wifi...");
 #endif
-      connectToWiFi();
+      numberRetries = 0;
+      wifiHandle();
     }
-    // Delay for 5 seconds (= 25*200ms) while looking for OTA
-    for (unsigned int i = 0; i < 25; i++)
+    else
     {
-      ArduinoOTA.handle();
-      delay(200);
+      mqttConnectState = CONNECT_WAIT;
+      mqttConnectNext = millis() + 5000;
+      delay(5);
     }
-    numberRetries++;
-  }
+    break;
+  case CONNECT_FAILURE:
 #ifdef DEBUG_SERIAL
-  Serial.println("MQTT reconnect tried limit reached. Doing reboot now.");
+    Serial.println("MQTT reconnect tried limit reached. Doing reboot now.");
 #endif
-  // Give up and do a reboot
-  ESP.restart();
+    delay(1000);
+    // Give up and do a reboot
+    ESP.restart();
+    break;
+  }
+}
+
+void mqttHandle()
+{
+  if (!mqttClient.connected())
+  {
+    mqttReconnect();
+  }
+  else
+  {
+    mqttClient.loop();
+  }
+  // Error due to analog reading of A0 to close to mqtt connect may cause error ref. https://github.com/knolleary/pubsubclient/issues/604#issuecomment-605597161
+  // Adding a delay seems to fix this
+  delay(2);
 }
 
 void mqttCallback(char *topic, byte *payload, unsigned int length)
@@ -558,10 +646,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
         ArduinoOTA.handle();
         delay(200);
       }
-      if (!mqttClient.connected())
-      {
-        mqttReconnect();
-      }
+      mqttHandle();
     }
     if (length > 0 && payload[0] != '0')
     {
@@ -605,7 +690,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
     {
       mqttClient.publish(OUT_TOPIC_WATER "/cmd/total", "", true);
       waterConsumptionCount = inputString.toInt();
-      // incrementTicks bt zero to tell any listers the value has changed
+      // incrementTicks by 0 to tell any listers the value has changed by 0
       incrementTicks(0);
     }
   }
@@ -777,18 +862,6 @@ void writeResponse(WiFiClient &client, const JsonDocument &doc)
   client.print(response);
 }
 
-void mqttHandle()
-{
-  if (!mqttClient.connected())
-  {
-    mqttReconnect();
-  }
-  mqttClient.loop();
-  // Error due to analog reading of A0 to close to mqtt connect may cause error ref. https://github.com/knolleary/pubsubclient/issues/604#issuecomment-605597161
-  // Adding a delay seems to fix this
-  delay(2);
-}
-
 #ifdef DEBUG_SCAN_TIME
 // Scan time is the time then looping part of a program runs in miliseconds.
 // Rule of thumb is to allow max 20ms to rule the program as runnning "live" and not async
@@ -860,8 +933,10 @@ void setup()
   digitalWrite(LED_BUILTIN, LOW); // Reverse meaning. LOW=LED ON
   WiFi.mode(WIFI_STA);
   WiFi.hostname(host);
-  connectToWiFi();
-
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    wifiHandle();
+  }
 #if SERIAL_CHOICE == SERIAL_SOFTWARE
 #warning Compiling for software serial
   SSerial.begin(19200, SWSERIAL_8E1);
@@ -871,12 +946,16 @@ void setup()
   Serial.begin(19200, SERIAL_8E1);
   node.begin(MODBUS_SLAVE_ADDRESS, Serial);
 #else
-#error hardware og serial serial port?
+#error hardware or serial serial port?
 #endif
 
   mqttClient.setServer(mqttServer, mqttServerPort);
   mqttClient.setCallback(mqttCallback);
-  mqttHandle();
+  while (!mqttClient.connected())
+  {
+    mqttHandle();
+    ArduinoOTA.handle();
+  }
   mqttClient.publish(OUT_TOPIC_VENT "/debug/bootTime", String(millis()).c_str());
   IPaddress = WiFi.localIP().toString();
   mqttClient.publish(OUT_TOPIC_VENT "/debug/ip", IPaddress.c_str());
@@ -892,8 +971,11 @@ void setup()
     mqttHandle();
     ArduinoOTA.handle();
   }
-  waterWaitingForConsumptionCount = false;
-  waterLastAliveMessage = millis();
+  if (waterWaitingForConsumptionCount)
+  {
+    mqttClient.unsubscribe(OUT_TOPIC_WATER "/total");
+    waterWaitingForConsumptionCount = false;
+  }
   waterIrLevel = readIR();
   if (waterIrLevel > waterIrMax)
   {
@@ -903,34 +985,37 @@ void setup()
 }
 
 bool modbusErrorActive = false;
+bool mqttSendOnConnectVent = false;
 
 void loop()
 {
   // Check if WiFi is still connected
   if (WiFi.status() != WL_CONNECTED)
   {
-#ifdef DEBUG_SERIAL
-    Serial.println("WiFi connection lost. Reconnecting...");
-#endif
-    connectToWiFi();
+    wifiHandle();
   }
-  ArduinoOTA.handle();
-  WiFiClient webClient = webServer.available();
-  if (webClient)
+  else
   {
-    bool success = readRequest(webClient);
-    if (success)
+    ArduinoOTA.handle();
+    WiFiClient webClient = webServer.available();
+    if (webClient)
     {
-      StaticJsonDocument<1000> doc;
-      HandleRequest(doc);
-      writeResponse(webClient, doc);
+      bool success = readRequest(webClient);
+      if (success)
+      {
+        StaticJsonDocument<1000> doc;
+        HandleRequest(doc);
+        writeResponse(webClient, doc);
+      }
+      webClient.stop();
     }
-    webClient.stop();
+    mqttHandle();
   }
-  mqttHandle();
 
   unsigned long now = millis();
-  if (now > ventEntryNext)
+  // Only run ventilation read if wifi and mqtt running.
+  // If data cannot be send anyway no reason to get it
+  if (now > ventEntryNext && mqttClient.connected() && WiFi.status() == WL_CONNECTED)
   {
     ventEntryNext = now + MQTT_SEND_INTERVAL;
     //  ventRequestTypes rr[] = {reqtemp, reqcontrol, reqtime, reqoutput, reqspeed, reqalarm, reqinputairtemp, reqprogram, requser, reqdisplay, reqinfo}; // put another register in this line to subscribe
