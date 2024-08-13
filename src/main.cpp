@@ -441,7 +441,8 @@ void wifiHandle()
       ArduinoOTA.setHostname(host);
       ArduinoOTA.setPassword(otaPassword);
       ArduinoOTA.begin(false); // Sec: Disable mDns if not used
-      webServer.begin();
+      webServer.close(); // Stop web server
+      webServer.begin(); // Start web server again
       wifiConnectState = CONNECT_SUCCESS;
       // wifiConnectState = CONNECT_START; // Reset state for future connections
       break;
@@ -719,24 +720,12 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
     if (length > 0 && inputString.toInt() >= 1 && inputString.toInt() <= 1024)
     {
       fakeIr = inputString.toInt();
-      // WriteModbus(TEMPSET, inputString.toInt() * 100); // Expect temperature 23 as 2300
-      // mqttClient.publish(OUT_TOPIC_VENT "/cmd/tempset", "", true);
-      // triggeredVentilation = true;
-    }
-    else if (payload[0] == '0')
-    {
-      // Do nothing
-      if (fakeIr > 0)
-        fakeIr = 0;
     }
     else if (length > 0)
     {
-      delay(5);
-      mqttClient.publish(OUT_TOPIC_WATER "/cmd/irlvl", "0");
-      if (fakeIr > 0)
-        fakeIr = 0;
+      mqttClient.publish(OUT_TOPIC_WATER "/cmd/irlvl", "", true);
+      fakeIr = 0;
     }
-    mqttClient.publish(OUT_TOPIC_WATER "/cmd/irlvl", "", true);
   }
   else if (waterWaitingForConsumptionCount && strcmp(topic, OUT_TOPIC_WATER "/total") == 0)
   {
