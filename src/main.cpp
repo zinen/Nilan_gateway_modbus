@@ -1146,7 +1146,7 @@ void loop()
               {
                 mqttTopic = OUT_TOPIC_VENT "/temp/"; // Subscribe to "temp" register
               }
-              dtostrf((rsBuffer[i] / 100.0), 5, 2, numberString);
+              dtostrf((rsBuffer[i] / 100.0), 5, 1, numberString);
               break;
             default:
               // If not all enumerations possibilities are handled then message are added to the unmapped topic
