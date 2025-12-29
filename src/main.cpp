@@ -70,9 +70,9 @@ int fakeIr = 0; // Used while debugging
 #define WATER_IR_PIN A0
 #define WATER_IR_LVL_HYSTERESIS 30
 int waterIrLevel, waterIrLevelReal, waterLastLevel, waterIrDiff, waterIrMaxReal, waterIrMinReal = 1024;
-int waterIrMin = 100;    // 75; // set realistic low  but about 20% higher then min. IR value found via debugging
-int waterIrMiddle = 400; // Set to about the middle of the IR returned value. IR value found via debugging
-int waterIrMax = 700;    // 800; // set realistic high but about 20% lower then max. IR value found via debugging
+int waterIrMin = 500;    // 75; // set realistic low  but about 20% higher then min. IR value found via debugging
+int waterIrMiddle = 700; // Set to about the middle of the IR returned value. IR value found via debugging
+int waterIrMax = 900;    // 800; // set realistic high but about 20% lower then max. IR value found via debugging
 unsigned long waterEntryNext;
 int waterState, waterStateLast;
 int waterConsumptionCount;
@@ -1141,12 +1141,15 @@ void loop()
               if (strncmp("RH", name, 2) == 0)
               {
                 mqttTopic = OUT_TOPIC_VENT "/moist/"; // Subscribe to moisture-level
+                // Keep 0 decimal places for RH
+                dtostrf((rsBuffer[i] / 100.0), 5, 0, numberString);
               }
               else
               {
                 mqttTopic = OUT_TOPIC_VENT "/temp/"; // Subscribe to "temp" register
+                // Keep 1 decimal places for temperatures
+                dtostrf((rsBuffer[i] / 100.0), 5, 1, numberString);
               }
-              dtostrf((rsBuffer[i] / 100.0), 5, 1, numberString);
               break;
             default:
               // If not all enumerations possibilities are handled then message are added to the unmapped topic
